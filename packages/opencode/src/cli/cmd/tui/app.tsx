@@ -33,6 +33,7 @@ import { StartupLoading } from "@tui/component/startup-loading"
 import { SyncProvider, useSync } from "@tui/context/sync"
 import { SyncProviderV2 } from "@tui/context/sync-v2"
 import { LocalProvider, useLocal } from "@tui/context/local"
+import { HivemindProvider } from "@tui/context/hivemind"
 import { DialogModel } from "@tui/component/dialog-model"
 import { useConnected } from "@tui/component/use-connected"
 import { DialogMcp } from "@tui/component/dialog-mcp"
@@ -258,19 +259,21 @@ async function mountTui(input: TuiInput & { keymap: ReturnType<typeof createDefa
                             <SyncProviderV2>
                               <ThemeProvider mode={mode}>
                                 <LocalProvider>
-                                  <PromptStashProvider>
-                                    <DialogProvider>
-                                      <FrecencyProvider>
-                                        <PromptHistoryProvider>
-                                          <PromptRefProvider>
-                                            <EditorContextProvider>
-                                              <App onSnapshot={input.onSnapshot} />
-                                            </EditorContextProvider>
-                                          </PromptRefProvider>
-                                        </PromptHistoryProvider>
-                                      </FrecencyProvider>
-                                    </DialogProvider>
-                                  </PromptStashProvider>
+                                  <HivemindProvider>
+                                    <PromptStashProvider>
+                                      <DialogProvider>
+                                        <FrecencyProvider>
+                                          <PromptHistoryProvider>
+                                            <PromptRefProvider>
+                                              <EditorContextProvider>
+                                                <App onSnapshot={input.onSnapshot} />
+                                              </EditorContextProvider>
+                                            </PromptRefProvider>
+                                          </PromptHistoryProvider>
+                                        </FrecencyProvider>
+                                      </DialogProvider>
+                                    </PromptStashProvider>
+                                  </HivemindProvider>
                                 </LocalProvider>
                               </ThemeProvider>
                             </SyncProviderV2>
@@ -521,6 +524,52 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         route.navigate({ type: "session", sessionID: match })
       }
     }
+  })
+
+  // grunt-it: bare `gruntcode` should land directly in the session view so the
+  // hivemind sidebar is visible from the first frame, ready for input. Without this,
+  // the user sees the splash/home route until they submit the first prompt — which
+  // hides the sidebar (the sidebar lives inside the session route).
+  //
+  // We auto-create an empty session and navigate when ALL of these hold:
+  // - No explicit --session / --continue / --fork (those have their own navigate paths)
+  // - No --prompt (--prompt with no session would land in home + auto-submit; let it)
+  // - Currently on home route (not already navigated elsewhere)
+  // - sync + model are ready (session.create needs an agent + model)
+  //
+  // Set OPENCODE_DISABLE_AUTO_SESSION=1 to keep the legacy "land on splash" behavior.
+  let autoCreated = false
+  createEffect(() => {
+    if (autoCreated) return
+    if (process.env["OPENCODE_DISABLE_AUTO_SESSION"]) return
+    if (args.sessionID || args.continue || args.fork || args.prompt) return
+    if (route.data.type !== "home") return
+    if (!sync.ready || !local.model.ready) return
+    const agent = local.agent.current()
+    const model = local.model.current()
+    const variant = local.model.variant.current()
+    if (!agent || !model) return
+    autoCreated = true
+    void sdk.client.session
+      .create({
+        agent: agent.name,
+        model: {
+          providerID: model.providerID,
+          id: model.modelID,
+          variant,
+        },
+      })
+      .then((result) => {
+        if (result.data?.id) {
+          route.navigate({ type: "session", sessionID: result.data.id })
+        } else {
+          // Non-fatal: stay on home, user can submit manually + that path will create the session.
+          autoCreated = false
+        }
+      })
+      .catch(() => {
+        autoCreated = false
+      })
   })
 
   // Handle --session with --fork: wait for sync to be fully complete before forking
