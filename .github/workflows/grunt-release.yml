@@ -54,8 +54,22 @@ jobs:
       - name: bun install
         run: bun install --frozen-lockfile
 
+      - name: Compute version from tag
+        id: version
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building gruntcode version: $VERSION (from tag $TAG)"
+
       - name: Build single-target binary
         working-directory: packages/opencode
+        env:
+          # Inject version metadata into the binary so `gruntcode --version` reports the
+          # real release tag (e.g. 1.15.10-grunt.7) instead of `0.0.0-<branch>-<timestamp>`.
+          OPENCODE_VERSION: ${{ steps.version.outputs.version }}
+          OPENCODE_RELEASE: "1"
+          OPENCODE_CHANNEL: "latest"
         run: bun script/build.ts --single --skip-embed-web-ui
         # --single → only build for the current host's platform+arch
         # --skip-embed-web-ui → drop the embedded web UI (we're a TUI-focused fork; cuts binary size + build time)
