@@ -1596,6 +1596,18 @@ function ReasoningHeader(props: {
   )
 }
 
+// grunt-it: linkify hivemind ticket refs (#229) inline so they render as clickable
+// markdown links pointing at the local hivemind-ui. The markdown renderer styles them
+// with theme.markdownLink (blue/cyan) and terminals supporting OSC 8 (iTerm2, kitty, etc.)
+// make the link clickable to open the URL. Falls back to colored-but-non-clickable text
+// in older terminals — still better than plain text.
+// Refs hivemind #233.
+const HIVEMIND_TICKET_RE = /(^|[^\w/#])#(\d{1,5})\b/g
+const HIVEMIND_UI_BASE = process.env.HIVEMIND_UI_BASE ?? "http://localhost:5173"
+function linkifyTicketRefs(text: string): string {
+  return text.replace(HIVEMIND_TICKET_RE, (_, prefix, id) => `${prefix}[#${id}](${HIVEMIND_UI_BASE}/tasks/${id})`)
+}
+
 function TextPart(props: { last: boolean; part: TextPart; message: AssistantMessage }) {
   const ctx = use()
   const { theme, syntax } = useTheme()
@@ -1606,7 +1618,7 @@ function TextPart(props: { last: boolean; part: TextPart; message: AssistantMess
           syntaxStyle={syntax()}
           streaming={true}
           internalBlockMode="top-level"
-          content={props.part.text.trim()}
+          content={linkifyTicketRefs(props.part.text.trim())}
           tableOptions={{ style: "grid" }}
           conceal={ctx.conceal()}
           fg={theme.markdownText}
