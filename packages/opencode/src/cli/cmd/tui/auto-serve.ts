@@ -56,9 +56,19 @@ async function spawnDaemon(port: number, host: string, binPath: string): Promise
   const logPath = path.join(dir, "serve.log")
   // append-mode so previous boots' logs remain
   const log = await open(logPath, "a")
+  // The spawned daemon is the parent of all session MCP children. We set
+  // OPENCODE_SERVER_URL on the daemon's env so hivemind-mcp (and any other
+  // coordination MCP loaded under a session) can discover the daemon's HTTP
+  // endpoint without being told it via CLI args. OPENCODE_PEER_ID is inherited
+  // via process.env if the user passed --peer-id; that's already set by setPeerID()
+  // earlier in the wrapper's lifecycle.
   const child = spawn(binPath, ["serve", "--port", String(port), "--hostname", host, "--print-logs"], {
     detached: true,
     stdio: ["ignore", log.fd, log.fd],
+    env: {
+      ...process.env,
+      OPENCODE_SERVER_URL: `http://${host}:${port}`,
+    },
   })
   child.unref()
   await log.close()
