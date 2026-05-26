@@ -56,6 +56,12 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
                 <text fg={theme.text}>
                   <b>{session()!.title}</b>
                 </text>
+                {/* grunt-it: render the named slug (e.g. nik-test-a3f9k) as the
+                    primary visible session identifier so Nik can tell parallel
+                    sessions apart in screenshots / `gruntcode list` output. */}
+                <Show when={session()!.slug}>
+                  <text fg={theme.textMuted}>{session()!.slug}</text>
+                </Show>
                 <Show when={InstallationChannel !== "latest"}>
                   <text fg={theme.textMuted}>{props.sessionID}</text>
                 </Show>
@@ -88,9 +94,11 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
         <box flexShrink={0} gap={1} paddingTop={1}>
           <TuiPluginRuntime.Slot name="sidebar_footer" mode="single_winner" session_id={props.sessionID}>
             <text fg={theme.textMuted}>
-              <span style={{ fg: theme.success }}>•</span> <b>Open</b>
+              <span style={{ fg: theme.success }}>
+                <b>grunt</b>
+              </span>
               <span style={{ fg: theme.text }}>
-                <b>Code</b>
+                <b>code</b>
               </span>{" "}
               <span>{InstallationVersion}</span>
             </text>
