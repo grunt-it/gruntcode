@@ -52,7 +52,7 @@ export const Info = Schema.Struct({
 export type Info = Schema.Schema.Type<typeof Info>
 
 export function userAgent(client = "cli") {
-  return `opencode/${InstallationChannel}/${InstallationVersion}/${client}`
+  return `gruntcode/${InstallationChannel}/${InstallationVersion}/${client}`
 }
 
 export const USER_AGENT = userAgent()
@@ -136,11 +136,10 @@ export const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProce
     )
 
     const getBrewFormula = Effect.fnUntraced(function* () {
-      const tapFormula = yield* text(["brew", "list", "--formula", "anomalyco/tap/opencode"])
-      if (tapFormula.includes("opencode")) return "anomalyco/tap/opencode"
-      const coreFormula = yield* text(["brew", "list", "--formula", "opencode"])
-      if (coreFormula.includes("opencode")) return "opencode"
-      return "opencode"
+      // grunt-it/tap/gruntcode is the canonical tap for the grunt-it soft-fork.
+      const tapFormula = yield* text(["brew", "list", "--formula", "grunt-it/tap/gruntcode"])
+      if (tapFormula.includes("gruntcode")) return "grunt-it/tap/gruntcode"
+      return "grunt-it/tap/gruntcode"
     })
 
     const upgradeFailure = (method: Method, result?: { code: number; stdout: string; stderr: string }) => {
@@ -150,24 +149,16 @@ export const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProce
     }
 
     const upgradeCurl = Effect.fnUntraced(
-      function* (target: string) {
-        const response = yield* httpOk.execute(HttpClientRequest.get("https://opencode.ai/install"))
-        const body = yield* response.text
-        const bodyBytes = new TextEncoder().encode(body)
-        const result = yield* appProcess.run(
-          ChildProcess.make("bash", [], {
-            stdin: Stream.make(bodyBytes),
-            env: { VERSION: target },
-            extendEnv: true,
-          }),
-        )
-        return {
-          code: result.exitCode,
-          stdout: result.stdout.toString("utf8"),
-          stderr: result.stderr.toString("utf8"),
-        }
+      function* (_target: string) {
+        // grunt-it soft-fork: we don't host a curl-install script. Anyone who landed in this
+        // path installed gruntcode via something other than brew (e.g. by manually downloading
+        // a release tarball into ~/.opencode/bin or ~/.local/bin). Point them at the canonical
+        // upgrade path instead of attempting a bash install pipeline.
+        return yield* new UpgradeFailedError({
+          stderr:
+            "curl-install upgrade is not supported for gruntcode. Install via `brew install grunt-it/tap/gruntcode` and run `brew upgrade gruntcode` to update, or manually download the latest release from https://github.com/grunt-it/gruntcode/releases.",
+        })
       },
-      Effect.mapError(() => new UpgradeFailedError({ stderr: upgradeFailure("curl") })),
     )
 
     const result: Interface = {
@@ -187,9 +178,9 @@ export const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProce
           { name: "yarn", command: () => text(["yarn", "global", "list"]) },
           { name: "pnpm", command: () => text(["pnpm", "list", "-g", "--depth=0"]) },
           { name: "bun", command: () => text(["bun", "pm", "ls", "-g"]) },
-          { name: "brew", command: () => text(["brew", "list", "--formula", "opencode"]) },
-          { name: "scoop", command: () => text(["scoop", "list", "opencode"]) },
-          { name: "choco", command: () => text(["choco", "list", "--limit-output", "opencode"]) },
+          { name: "brew", command: () => text(["brew", "list", "--formula", "grunt-it/tap/gruntcode"]) },
+          { name: "scoop", command: () => text(["scoop", "list", "gruntcode"]) },
+          { name: "choco", command: () => text(["choco", "list", "--limit-output", "gruntcode"]) },
         ]
 
         checks.sort((a, b) => {
@@ -202,8 +193,12 @@ export const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProce
 
         for (const check of checks) {
           const output = yield* check.command()
+          // grunt-it soft-fork: brew is the canonical install method (grunt-it/tap/gruntcode).
+          // npm/bun/pnpm/yarn/scoop/choco paths are unsupported \u2014 we don't publish there \u2014
+          // but kept for shape compat with upstream. Match 'gruntcode' so the brew path
+          // detects our install correctly.
           const installedName =
-            check.name === "brew" || check.name === "choco" || check.name === "scoop" ? "opencode" : "opencode-ai"
+            check.name === "brew" || check.name === "choco" || check.name === "scoop" ? "gruntcode" : "opencode-ai"
           if (output.includes(installedName)) {
             return check.name
           }
@@ -215,19 +210,14 @@ export const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProce
         const detectedMethod = installMethod || (yield* result.method())
 
         if (detectedMethod === "brew") {
+          // grunt-it soft-fork: always use tap formula (grunt-it/tap/gruntcode). No upstream
+          // core-formula fallback — we're not in homebrew-core, and a query to formulae.brew.sh
+          // for 'gruntcode' would 404. The tap path uses 'brew info --json=v2' which works for
+          // any formula format (tap or core), so it stays correct.
           const formula = yield* getBrewFormula()
-          if (formula.includes("/")) {
-            const infoJson = yield* text(["brew", "info", "--json=v2", formula])
-            const info = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(BrewInfoV2))(infoJson)
-            return info.formulae[0].versions.stable
-          }
-          const response = yield* httpOk.execute(
-            HttpClientRequest.get("https://formulae.brew.sh/api/formula/opencode.json").pipe(
-              HttpClientRequest.acceptJson,
-            ),
-          )
-          const data = yield* HttpClientResponse.schemaBodyJson(BrewFormula)(response)
-          return data.versions.stable
+          const infoJson = yield* text(["brew", "info", "--json=v2", formula])
+          const info = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(BrewInfoV2))(infoJson)
+          return info.formulae[0].versions.stable
         }
 
         if (detectedMethod === "npm" || detectedMethod === "bun" || detectedMethod === "pnpm") {
@@ -260,8 +250,11 @@ export const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProce
           return data.version
         }
 
+        // grunt-it soft-fork: GitHub releases live at grunt-it/gruntcode, not anomalyco/opencode.
+        // Release tags follow vX.Y.Z-grunt.N (e.g. v1.15.10-grunt.4) — strip the leading 'v'
+        // and we report the full grunt-suffixed version string back to the caller.
         const response = yield* httpOk.execute(
-          HttpClientRequest.get("https://api.github.com/repos/anomalyco/opencode/releases/latest").pipe(
+          HttpClientRequest.get("https://api.github.com/repos/grunt-it/gruntcode/releases/latest").pipe(
             HttpClientRequest.acceptJson,
           ),
         )
@@ -284,22 +277,21 @@ export const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProce
             upgradeResult = yield* run(["bun", "install", "-g", `opencode-ai@${target}`])
             break
           case "brew": {
+            // grunt-it soft-fork: tap is grunt-it/tap.
             const formula = yield* getBrewFormula()
             const env = { HOMEBREW_NO_AUTO_UPDATE: "1" }
-            if (formula.includes("/")) {
-              const tap = yield* run(["brew", "tap", "anomalyco/tap"], { env })
-              if (tap.code !== 0) {
-                upgradeResult = tap
+            const tap = yield* run(["brew", "tap", "grunt-it/tap"], { env })
+            if (tap.code !== 0) {
+              upgradeResult = tap
+              break
+            }
+            const repo = yield* text(["brew", "--repo", "grunt-it/tap"])
+            const dir = repo.trim()
+            if (dir) {
+              const pull = yield* run(["git", "pull", "--ff-only"], { cwd: dir, env })
+              if (pull.code !== 0) {
+                upgradeResult = pull
                 break
-              }
-              const repo = yield* text(["brew", "--repo", "anomalyco/tap"])
-              const dir = repo.trim()
-              if (dir) {
-                const pull = yield* run(["git", "pull", "--ff-only"], { cwd: dir, env })
-                if (pull.code !== 0) {
-                  upgradeResult = pull
-                  break
-                }
               }
             }
             upgradeResult = yield* run(["brew", "upgrade", formula], { env })
