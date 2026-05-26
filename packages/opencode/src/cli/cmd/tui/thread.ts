@@ -22,8 +22,30 @@ import {
   setPeerID,
 } from "@opencode-ai/core/util/opencode-process"
 import { validateSession } from "./validate-session"
-import { ensureServeDaemon } from "./auto-serve"
-import { spawn as spawnChild } from "child_process"
+import { createServer } from "node:net"
+
+// grunt-it: pick a free localhost TCP port pre-spawn so we can stamp it into the
+// worker's env (and thus MCP children's env) before the worker starts. This lets
+// hivemind-mcp auto-announce read OPENCODE_WAKE_PORT at boot — no daemon, no
+// session-id discovery, no SSE relay. The wake endpoint lives on the worker's
+// HTTP server bound to this port.
+async function pickFreePort(): Promise<number> {
+  return await new Promise<number>((resolve, reject) => {
+    const srv = createServer()
+    srv.unref()
+    srv.on("error", reject)
+    srv.listen({ port: 0, host: "127.0.0.1" }, () => {
+      const addr = srv.address()
+      if (addr && typeof addr === "object") {
+        const port = addr.port
+        srv.close(() => resolve(port))
+      } else {
+        srv.close()
+        reject(new Error("could not determine bound port"))
+      }
+    })
+  })
+}
 
 declare global {
   const OPENCODE_WORKER_PATH: string
@@ -137,38 +159,6 @@ export const TuiThreadCommand = cmd({
         return
       }
 
-      // grunt-it patch: make bare `gruntcode` wakeable by ensuring a serve
-      // daemon exists and re-execing into `gruntcode attach <url>`. The user
-      // sees an unchanged TUI — implementation detail (the daemon + attach)
-      // is hidden behind the bare command. Set OPENCODE_DISABLE_AUTO_SERVE=1
-      // to skip and use the legacy in-process worker. Refs hivemind #224.
-      const auto = await ensureServeDaemon()
-      if (auto.ok) {
-        const attachArgs: string[] = ["attach", auto.url]
-        if (args.project) attachArgs.push("--dir", args.project)
-        if (args.continue) attachArgs.push("--continue")
-        if (args.session) attachArgs.push("--session", args.session)
-        if (args.fork) attachArgs.push("--fork")
-        if (args["peer-id"]) attachArgs.push("--peer-id", args["peer-id"])
-        // Re-exec via child_process and inherit stdio so the TUI replaces this
-        // process visually. We exit when the attach child exits.
-        const child = spawnChild(auto.bin, attachArgs, { stdio: "inherit" })
-        await new Promise<void>((resolve) => {
-          child.on("close", (code) => {
-            process.exitCode = code ?? 0
-            resolve()
-          })
-          child.on("error", (err) => {
-            Log.Default.error("auto-serve attach re-exec failed", { error: errorMessage(err) })
-            resolve()
-          })
-        })
-        return
-      }
-      // auto-serve unavailable (e.g. OPENCODE_DISABLE_AUTO_SERVE set, daemon
-      // could not be spawned) — fall through to the legacy in-process path.
-      Log.Default.info("auto-serve skipped", { reason: auto.reason })
-
       // Resolve relative --project paths from PWD, then use the real cwd after
       // chdir so the thread and worker share the same directory key.
       const next = resolveThreadDirectory(args.project)
@@ -180,9 +170,32 @@ export const TuiThreadCommand = cmd({
         return
       }
       const cwd = Filesystem.resolve(process.cwd())
+
+      // grunt-it patch: pre-pick a wake-listener port and stamp it into worker env so MCP
+      // children inherit OPENCODE_WAKE_PORT + OPENCODE_SERVER_URL. The worker will bind its
+      // HTTP server to this port below, making the TUI session wakeable via
+      // POST http://127.0.0.1:<port>/session/<id>/prompt_async — no daemon required.
+      // Set OPENCODE_DISABLE_WAKE_LISTENER=1 to skip (legacy non-wakeable mode).
+      let wakePort: number | null = null
+      if (!process.env.OPENCODE_DISABLE_WAKE_LISTENER) {
+        try {
+          wakePort = await pickFreePort()
+        } catch (err) {
+          Log.Default.warn("could not pick wake-listener port (session will not be wakeable)", {
+            error: errorMessage(err),
+          })
+        }
+      }
+
       const env = sanitizedProcessEnv({
         [OPENCODE_PROCESS_ROLE]: "worker",
         [OPENCODE_RUN_ID]: ensureRunID(),
+        ...(wakePort
+          ? {
+              OPENCODE_WAKE_PORT: String(wakePort),
+              OPENCODE_SERVER_URL: `http://127.0.0.1:${wakePort}`,
+            }
+          : {}),
       })
 
       const worker = new Worker(file, {
@@ -239,6 +252,22 @@ export const TuiThreadCommand = cmd({
         network.mdns ||
         network.port !== 0 ||
         network.hostname !== "127.0.0.1"
+
+      // grunt-it patch: in addition to the in-process worker transport (which is what the TUI
+      // talks over for fetch + events), bind the worker's HTTP server on the pre-picked wake
+      // port so external callers can POST to /session/<id>/prompt_async and wake this session.
+      // The port was already stamped into worker env above so MCP children know it.
+      // Refs hivemind #224.
+      if (!external && wakePort) {
+        try {
+          await client.call("server", { port: wakePort, hostname: "127.0.0.1" })
+          Log.Default.info("wake listener bound", { url: `http://127.0.0.1:${wakePort}` })
+        } catch (err) {
+          Log.Default.warn("wake listener bind failed (session will not be wakeable)", {
+            error: errorMessage(err),
+          })
+        }
+      }
 
       const transport = external
         ? {
