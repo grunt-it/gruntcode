@@ -19,6 +19,7 @@ import {
   OPENCODE_RUN_ID,
   ensureRunID,
   sanitizedProcessEnv,
+  setPeerID,
 } from "@opencode-ai/core/util/opencode-process"
 import { validateSession } from "./validate-session"
 
@@ -111,6 +112,11 @@ export const TuiThreadCommand = cmd({
       .option("agent", {
         type: "string",
         describe: "agent to use",
+      })
+      .option("peer-id", {
+        type: "string",
+        describe:
+          "stable identifier for this terminal/tab (also via OPENCODE_PEER_ID env). Propagated to MCP children for coordination MCPs to read.",
       }),
   handler: async (args) => {
     // Keep ENABLE_PROCESSED_INPUT cleared even if other code flips it.
@@ -120,6 +126,8 @@ export const TuiThreadCommand = cmd({
       // Must be the very first thing — disables CTRL_C_EVENT before any Worker
       // spawn or async work so the OS cannot kill the process group.
       win32DisableProcessedInput()
+
+      setPeerID(args["peer-id"])
 
       if (args.fork && !args.continue && !args.session) {
         UI.error("--fork requires --continue or --session")
