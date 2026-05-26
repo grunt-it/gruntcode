@@ -54,6 +54,12 @@ bun install
 bun run --cwd packages/opencode src/index.ts --help
 ```
 
+## Releases
+
+Tagged releases live under [grunt-it/gruntcode releases](https://github.com/grunt-it/gruntcode/releases). Tags follow `vX.Y.Z-grunt.N` where `X.Y.Z` is the upstream opencode version we last rebased on, and `N` is the grunt-patch revision against that base.
+
+Pushing a tag matching `v*-grunt.*` to `dev` triggers `.github/workflows/grunt-release.yml`, which builds binaries for macOS arm64/x64 + Linux x64/arm64 and uploads tarballs to the GH release. The homebrew tap formula resolves the latest stable.
+
 ## Contributing
 
 For patches that should land in **opencode upstream**: open the PR there directly. We'll see it and drop our equivalent on next rebase.

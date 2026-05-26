@@ -1,0 +1,96 @@
+name: grunt-release
+
+# Builds gruntcode binaries on tag push and publishes a GitHub Release.
+#
+# Trigger: push a tag matching v*-grunt.* (e.g. v1.15.10-grunt.1) to grunt-it/gruntcode:dev.
+# Result: cross-platform binaries (macos arm64/x64, linux x64/arm64) uploaded as
+# release assets. Brew formula downloads from there.
+#
+# This workflow is intentionally minimal — we leverage upstream's
+# packages/opencode/script/build.ts for the actual Bun.build invocation +
+# rename the produced 'opencode' binary to 'gruntcode' before packaging.
+#
+# Gating: only runs on grunt-it/gruntcode so a rebase that pulls upstream's
+# workflows doesn't accidentally trigger anything ours.
+
+on:
+  push:
+    tags:
+      - "v*-grunt.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (must already exist, e.g. v1.15.10-grunt.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    if: github.repository == 'grunt-it/gruntcode'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host: macos-14
+            target_name: gruntcode-darwin-arm64
+          - host: macos-13
+            target_name: gruntcode-darwin-x64
+          - host: ubuntu-24.04
+            target_name: gruntcode-linux-x64
+          - host: ubuntu-24.04-arm
+            target_name: gruntcode-linux-arm64
+    runs-on: ${{ matrix.host }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-tags: true
+
+      - uses: ./.github/actions/setup-bun
+
+      - name: bun install
+        run: bun install --frozen-lockfile
+
+      - name: Build single-target binary
+        working-directory: packages/opencode
+        run: bun script/build.ts --single --skip-embed-web-ui
+        # --single → only build for the current host's platform+arch
+        # --skip-embed-web-ui → drop the embedded web UI (we're a TUI-focused fork; cuts binary size + build time)
+
+      - name: Locate + rename binary
+        id: locate
+        working-directory: packages/opencode
+        run: |
+          # build.ts writes to dist/<package-name>/bin/opencode where package-name is e.g. opencode-darwin-arm64
+          binary=$(find dist -name opencode -type f | head -1)
+          if [ -z "$binary" ]; then
+            echo "ERROR: no opencode binary produced under dist/. Listing tree:"
+            find dist -type f | head -40
+            exit 1
+          fi
+          echo "Found binary at: $binary"
+          # Rename to gruntcode + place at top-level for packaging
+          cp "$binary" gruntcode
+          chmod +x gruntcode
+          ./gruntcode --version
+          echo "binary=$(pwd)/gruntcode" >> $GITHUB_OUTPUT
+
+      - name: Package
+        working-directory: packages/opencode
+        run: |
+          tar -czf ${{ matrix.target_name }}.tar.gz gruntcode
+          shasum -a 256 ${{ matrix.target_name }}.tar.gz | tee ${{ matrix.target_name }}.tar.gz.sha256
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          files: |
+            packages/opencode/${{ matrix.target_name }}.tar.gz
+            packages/opencode/${{ matrix.target_name }}.tar.gz.sha256
+          fail_on_unmatched_files: true
+          # Don't overwrite a release body if one was hand-written before pushing the tag
+          generate_release_notes: true
