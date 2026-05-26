@@ -1,9 +1,31 @@
 // grunt-it soft-fork branding: "grunt" (left, rendered in green via Logo override) + "code" (right, default theme text).
-// Letterforms follow the upstream 4-row block-glyph style: row 0 is a spacer (gets the descender of any letter
-// with one), rows 1-3 carry the glyph with `_^~,` shadow markers consumed by component/logo.tsx.
+//
+// Clean block glyphs: NO shadow markers (_^~,). Just █▀▄ and space. Each letter is 4 columns wide and
+// 3 rows tall plus a 1-row spacer at top. Letters separated by 1 space.
+//
+// Letter design:
+//   G:        R:        U:        N:        T:
+//   █▀▀▀      █▀▀▄      █  █      █▄ █      ▀█▀
+//   █ ▀█      █▀▀▄      █  █      █ ▀█       █
+//   ▀▀▀▀      ▀  ▀      ▀▀▀▀      ▀  ▀       ▀
+//
+//   C:        O:        D:        E:
+//   █▀▀▀      █▀▀█      █▀▀▄      █▀▀▀
+//   █         █  █      █  █      █▀▀
+//   ▀▀▀▀      ▀▀▀▀      ▀▀▀▀      ▀▀▀▀
 export const logo = {
-  left: ["                        ", "█▀▀█ █▀▀█ █  █ █▀▀▄ ▀▀█▀", "█ __ █▀▀▄ █  █ █^^█  █  ", "▀▀▀▀ ▀~~▀ ▀▀▀▀ ▀  ▀  ▀  "],
-  right: ["             ▄     ", "█▀▀▀ █▀▀█ █▀▀█ █▀▀█", "█___ █__█ █__█ █^^^", "▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀"],
+  left: [
+    "                        ",
+    "█▀▀▀ █▀▀▄ █  █ █▄ █ ▀█▀ ",
+    "█ ▀█ █▀▀▄ █  █ █ ▀█  █  ",
+    "▀▀▀▀ ▀  ▀ ▀▀▀▀ ▀  ▀  ▀  ",
+  ],
+  right: [
+    "                   ",
+    "█▀▀▀ █▀▀█ █▀▀▄ █▀▀▀",
+    "█    █  █ █  █ █▀▀ ",
+    "▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀",
+  ],
 }
 
 export const go = {
