@@ -1,4 +1,5 @@
 import { Slug } from "@opencode-ai/core/util/slug"
+import { getPeerID } from "@opencode-ai/core/util/opencode-process"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import path from "path"
 import { BackgroundJob } from "@/background/job"
@@ -532,9 +533,14 @@ export const layer: Layer.Layer<
       permission?: Permission.Ruleset
     }) {
       const ctx = yield* InstanceState.context
+      // grunt-it: prefer a named slug derived from the peer-id (--peer-id flag / OPENCODE_PEER_ID env)
+      // or the cwd basename when no peer-id is set. Falls back to the random adjective-noun slug
+      // only when neither is available (subagent sessions with no directory, edge cases).
+      const slugBase = getPeerID() ?? (input.directory ? path.basename(input.directory) : undefined)
+      const slug = slugBase ? Slug.createNamed(slugBase) : Slug.create()
       const result: Info = {
         id: SessionID.descending(input.id),
-        slug: Slug.create(),
+        slug,
         version: InstallationVersion,
         projectID: ctx.project.id,
         directory: input.directory,

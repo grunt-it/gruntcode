@@ -11,6 +11,11 @@ export function setPeerID(peerID: string | undefined) {
   if (peerID && peerID.length > 0) process.env[OPENCODE_PEER_ID] = peerID
 }
 
+export function getPeerID(): string | undefined {
+  const value = process.env[OPENCODE_PEER_ID]
+  return value && value.length > 0 ? value : undefined
+}
+
 export function ensureRunID() {
   return (process.env[OPENCODE_RUN_ID] ??= crypto.randomUUID())
 }
