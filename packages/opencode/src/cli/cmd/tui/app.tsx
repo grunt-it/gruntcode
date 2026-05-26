@@ -33,6 +33,7 @@ import { StartupLoading } from "@tui/component/startup-loading"
 import { SyncProvider, useSync } from "@tui/context/sync"
 import { SyncProviderV2 } from "@tui/context/sync-v2"
 import { LocalProvider, useLocal } from "@tui/context/local"
+import { HivemindProvider } from "@tui/context/hivemind"
 import { DialogModel } from "@tui/component/dialog-model"
 import { useConnected } from "@tui/component/use-connected"
 import { DialogMcp } from "@tui/component/dialog-mcp"
@@ -232,19 +233,21 @@ export function tui(input: {
                               <SyncProviderV2>
                                 <ThemeProvider mode={mode}>
                                   <LocalProvider>
-                                    <PromptStashProvider>
-                                      <DialogProvider>
-                                        <FrecencyProvider>
-                                          <PromptHistoryProvider>
-                                            <PromptRefProvider>
-                                              <EditorContextProvider>
-                                                <App onSnapshot={input.onSnapshot} />
-                                              </EditorContextProvider>
-                                            </PromptRefProvider>
-                                          </PromptHistoryProvider>
-                                        </FrecencyProvider>
-                                      </DialogProvider>
-                                    </PromptStashProvider>
+                                    <HivemindProvider>
+                                      <PromptStashProvider>
+                                        <DialogProvider>
+                                          <FrecencyProvider>
+                                            <PromptHistoryProvider>
+                                              <PromptRefProvider>
+                                                <EditorContextProvider>
+                                                  <App onSnapshot={input.onSnapshot} />
+                                                </EditorContextProvider>
+                                              </PromptRefProvider>
+                                            </PromptHistoryProvider>
+                                          </FrecencyProvider>
+                                        </DialogProvider>
+                                      </PromptStashProvider>
+                                    </HivemindProvider>
                                   </LocalProvider>
                                 </ThemeProvider>
                               </SyncProviderV2>

@@ -8,6 +8,7 @@ import { TuiPluginRuntime } from "@/cli/cmd/tui/plugin/runtime"
 
 import { getScrollAcceleration } from "../../util/scroll"
 import { WorkspaceLabel } from "../../component/workspace-label"
+import { HivemindSections } from "./hivemind-sections"
 
 export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
   const project = useProject()
@@ -88,6 +89,9 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
               </box>
             </TuiPluginRuntime.Slot>
             <TuiPluginRuntime.Slot name="sidebar_content" session_id={props.sessionID} />
+            {/* grunt-it: hivemind ambient awareness (#229). Polls hivemind-api on
+                localhost:7890; falls back to "api offline" placeholder when unreachable. */}
+            <HivemindSections />
           </box>
         </scrollbox>
 
