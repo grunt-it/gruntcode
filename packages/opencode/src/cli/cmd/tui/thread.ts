@@ -22,6 +22,8 @@ import {
   setPeerID,
 } from "@opencode-ai/core/util/opencode-process"
 import { validateSession } from "./validate-session"
+import { ensureServeDaemon } from "./auto-serve"
+import { spawn as spawnChild } from "child_process"
 
 declare global {
   const OPENCODE_WORKER_PATH: string
@@ -134,6 +136,38 @@ export const TuiThreadCommand = cmd({
         process.exitCode = 1
         return
       }
+
+      // grunt-it patch: make bare `gruntcode` wakeable by ensuring a serve
+      // daemon exists and re-execing into `gruntcode attach <url>`. The user
+      // sees an unchanged TUI — implementation detail (the daemon + attach)
+      // is hidden behind the bare command. Set OPENCODE_DISABLE_AUTO_SERVE=1
+      // to skip and use the legacy in-process worker. Refs hivemind #224.
+      const auto = await ensureServeDaemon()
+      if (auto.ok) {
+        const attachArgs: string[] = ["attach", auto.url]
+        if (args.project) attachArgs.push("--dir", args.project)
+        if (args.continue) attachArgs.push("--continue")
+        if (args.session) attachArgs.push("--session", args.session)
+        if (args.fork) attachArgs.push("--fork")
+        if (args["peer-id"]) attachArgs.push("--peer-id", args["peer-id"])
+        // Re-exec via child_process and inherit stdio so the TUI replaces this
+        // process visually. We exit when the attach child exits.
+        const child = spawnChild(auto.bin, attachArgs, { stdio: "inherit" })
+        await new Promise<void>((resolve) => {
+          child.on("close", (code) => {
+            process.exitCode = code ?? 0
+            resolve()
+          })
+          child.on("error", (err) => {
+            Log.Default.error("auto-serve attach re-exec failed", { error: errorMessage(err) })
+            resolve()
+          })
+        })
+        return
+      }
+      // auto-serve unavailable (e.g. OPENCODE_DISABLE_AUTO_SERVE set, daemon
+      // could not be spawned) — fall through to the legacy in-process path.
+      Log.Default.info("auto-serve skipped", { reason: auto.reason })
 
       // Resolve relative --project paths from PWD, then use the real cwd after
       // chdir so the thread and worker share the same directory key.
