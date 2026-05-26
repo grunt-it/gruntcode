@@ -8,6 +8,7 @@ import { ServerAuth } from "@/server/auth"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import type { GlobalEvent } from "@opencode-ai/sdk/v2"
 import type { EventSource } from "./context/sdk"
+import { setPeerID } from "@opencode-ai/core/util/opencode-process"
 
 // Subscribe to the server's /global/event SSE stream so externally-triggered
 // session activity (e.g. wakes via POST /session/<id>/prompt_async from another
@@ -83,11 +84,18 @@ export const AttachCommand = cmd({
         alias: ["u"],
         type: "string",
         describe: "basic auth username (defaults to OPENCODE_SERVER_USERNAME or 'opencode')",
+      })
+      .option("peer-id", {
+        type: "string",
+        describe:
+          "stable identifier for this terminal/tab (also via OPENCODE_PEER_ID env). Propagated to MCP children for coordination MCPs to read.",
       }),
   handler: async (args) => {
     const unguard = win32InstallCtrlCGuard()
     try {
       win32DisableProcessedInput()
+
+      setPeerID(args["peer-id"])
 
       if (args.fork && !args.continue && !args.session) {
         UI.error("--fork requires --continue or --session")
