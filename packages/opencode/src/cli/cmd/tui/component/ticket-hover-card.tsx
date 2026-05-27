@@ -2,7 +2,7 @@
 //
 // Rendered ONCE at the app-root level. Reads the global hoveredTicket signal from the
 // Hivemind context; when set, shows the ticket detail at a position anchored near the
-// trigger's cursor coords (just below + slightly right, with right-edge overflow guard).
+// trigger's cursor coords (just below + slightly right, with overflow guards).
 //
 // Sticky-hover semantics: the card also has its own onMouseOver/Out — entering the card
 // cancels the trigger's close-timer (so the cursor can traverse the gap between trigger
@@ -16,6 +16,22 @@ import { useTheme } from "../context/theme"
 
 const CARD_WIDTH = 60
 const CARD_MAX_HEIGHT = 16
+const SCOPE_PREVIEW_CHARS = 180
+
+/** Flatten a multi-line markdown-flavored scope into a single-paragraph preview for the
+ * tooltip. The hover card is a small preview, not a full doc render — newlines, markdown
+ * headings, code fences, and stacked whitespace would otherwise wreck the layout (caught
+ * 2026-05-27: a multi-line scope with `## heading` + blank-line gaps was rendering as
+ * mangled bleed when the text renderable's wrap-word mode joined adjacent lines). */
+function flattenScope(raw: string | null | undefined): string {
+  if (!raw) return ""
+  return raw
+    .replace(/```[\s\S]*?```/g, " ") // strip fenced code blocks
+    .replace(/^#+\s*/gm, "") // strip markdown headings
+    .replace(/[*_`>]/g, "") // strip emphasis / quote markers
+    .replace(/\s+/g, " ") // collapse all whitespace to single spaces
+    .trim()
+}
 
 export function TicketHoverCard() {
   const hive = useHivemind()
@@ -25,7 +41,7 @@ export function TicketHoverCard() {
   return (
     <Show when={hive.hoveredTicket()}>
       {(anchor) => {
-        // Position: just below the trigger cursor, offset right by 2 cols. If that would
+        // Position: just below the trigger cursor, offset right by 1 col. If that would
         // push off the right edge, flip the card so its right edge aligns with the cursor.
         const left = () => {
           const desired = anchor().anchorX + 1
@@ -35,7 +51,6 @@ export function TicketHoverCard() {
         }
         const top = () => {
           const desired = anchor().anchorY + 1
-          // If near the bottom, flip above the cursor.
           if (desired + CARD_MAX_HEIGHT > dims().height) {
             return Math.max(0, anchor().anchorY - CARD_MAX_HEIGHT)
           }
@@ -47,6 +62,7 @@ export function TicketHoverCard() {
             position="absolute"
             left={left()}
             top={top()}
+            flexDirection="column"
             backgroundColor={theme.backgroundPanel}
             border={true}
             borderColor={theme.border}
@@ -55,7 +71,7 @@ export function TicketHoverCard() {
             paddingTop={0}
             paddingBottom={0}
             zIndex={3000}
-            maxWidth={CARD_WIDTH}
+            width={CARD_WIDTH}
             onMouseOver={() => hive.setCardHovered(true)}
             onMouseOut={() => hive.setCardHovered(false)}
           >
@@ -68,36 +84,27 @@ export function TicketHoverCard() {
               if (d === null) {
                 return <text fg={theme.textMuted}>#{id}: not found</text>
               }
+              const titleLine = `#${d.id} ${d.title}`
+              const metaParts: string[] = [d.status, d.priority]
+              if (d.zone) metaParts.push(`zone=${d.zone}`)
+              if (d.owner) metaParts.push(`owner=${d.owner}`)
+              const metaLine = metaParts.join(" · ")
+              const scopeFlat = flattenScope(d.scope)
+              const scopePreview =
+                scopeFlat.length > SCOPE_PREVIEW_CHARS
+                  ? scopeFlat.slice(0, SCOPE_PREVIEW_CHARS) + "…"
+                  : scopeFlat
               return (
-                <>
-                  <text fg={theme.text} wrapMode="word">
-                    <b>
-                      #{d.id} {d.title}
-                    </b>
+                <box flexDirection="column">
+                  <text fg={theme.text} attributes={1}>
+                    {titleLine}
                   </text>
-                  <text fg={theme.textMuted}>
-                    <span>{d.status}</span>
-                    {" · "}
-                    <span>{d.priority}</span>
-                    <Show when={d.zone}>
-                      {" · "}
-                      <span>zone={d.zone}</span>
-                    </Show>
-                    <Show when={d.owner}>
-                      {" · "}
-                      <span>owner={d.owner}</span>
-                    </Show>
-                  </text>
-                  <Show when={d.scope}>
-                    <text fg={theme.textMuted} wrapMode="word">
-                      {(d.scope ?? "").slice(0, 220)}
-                      {(d.scope ?? "").length > 220 ? "..." : ""}
-                    </text>
+                  <text fg={theme.textMuted}>{metaLine}</text>
+                  <Show when={scopePreview}>
+                    <text fg={theme.textMuted}>{scopePreview}</text>
                   </Show>
-                  <text fg={theme.textMuted}>
-                    <span>click to open in hivemind-ui</span>
-                  </text>
-                </>
+                  <text fg={theme.textMuted}>click to open in hivemind-ui</text>
+                </box>
               )
             })()}
           </box>
