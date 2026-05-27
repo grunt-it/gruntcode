@@ -30,6 +30,7 @@ import { EditorContextProvider } from "@tui/context/editor"
 import { useEvent } from "@tui/context/event"
 import { SDKProvider, useSDK } from "@tui/context/sdk"
 import { StartupLoading } from "@tui/component/startup-loading"
+import { TicketHoverCard } from "@tui/component/ticket-hover-card"
 import { SyncProvider, useSync } from "@tui/context/sync"
 import { SyncProviderV2 } from "@tui/context/sync-v2"
 import { LocalProvider, useLocal } from "@tui/context/local"
@@ -1142,6 +1143,10 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         <TuiPluginRuntime.Slot name="app" />
       </Show>
       <StartupLoading ready={ready} />
+      {/* grunt-it: single floating hivemind ticket hover card (#233). Rendered once,
+          anchored at top-right. Reads the global hoveredTicketId signal so per-ref
+          tooltip overlap can't cause flicker. */}
+      <TicketHoverCard />
     </box>
   )
 }

@@ -20,6 +20,19 @@ import { getPeerID } from "@opencode-ai/core/util/opencode-process"
 const DEFAULT_API = "http://127.0.0.1:7890"
 const POLL_INTERVAL_MS = 2000
 
+// Cached + dedup'd ticket-detail fetches used by TicketRef hover (#233). Lives in the
+// context (not in the component) so multiple TicketRefs share a single fetch per id and
+// hover→unhover→hover doesn't refire the request.
+export type TicketDetail = {
+  id: number
+  title: string
+  scope?: string | null
+  status: string
+  priority: string
+  zone?: string | null
+  owner?: string | null
+}
+
 export type Peer = {
   id: string
   engine: string
@@ -204,11 +217,68 @@ export const { use: useHivemind, provider: HivemindProvider } = createSimpleCont
       poll().catch(() => {})
     }
 
+    // ----- ticket-hover state (#233) ---------------------------------------------------------
+    // One global "currently-hovered ticket id" signal. TicketRefs set/clear it on
+    // enter/leave; the single floating TicketHoverCard reads it and renders the detail.
+    // No per-ref tooltip boxes overlapping their own text → no flicker.
+    const [hoveredTicketId, setHoveredTicketId] = createSignal<number | null>(null)
+    const ticketCache = new Map<number, TicketDetail | null>()
+    const ticketInflight = new Map<number, Promise<TicketDetail | null>>()
+    const [ticketCacheTick, setTicketCacheTick] = createSignal(0)
+
+    function ticketDetail(id: number): TicketDetail | null | undefined {
+      // Read the tick so consumers re-render when the cache updates.
+      ticketCacheTick()
+      return ticketCache.get(id)
+    }
+
+    function fetchTicket(id: number): Promise<TicketDetail | null> {
+      if (ticketCache.has(id)) return Promise.resolve(ticketCache.get(id) ?? null)
+      const existing = ticketInflight.get(id)
+      if (existing) return existing
+      const p = (async () => {
+        try {
+          const controller = new AbortController()
+          const t = setTimeout(() => controller.abort(), 1500)
+          const res = await fetch(`${apiBase}/api/tasks/${id}`, { signal: controller.signal })
+          clearTimeout(t)
+          if (!res.ok) {
+            ticketCache.set(id, null)
+            return null
+          }
+          const body = (await res.json()) as { task?: TicketDetail } | TicketDetail
+          const task = (body as { task?: TicketDetail }).task ?? (body as TicketDetail)
+          ticketCache.set(id, task ?? null)
+          return task ?? null
+        } catch {
+          ticketCache.set(id, null)
+          return null
+        } finally {
+          ticketInflight.delete(id)
+          setTicketCacheTick((n) => n + 1)
+        }
+      })()
+      ticketInflight.set(id, p)
+      return p
+    }
+
+    function setHoveredTicket(id: number | null) {
+      setHoveredTicketId(id)
+      if (id !== null && !ticketCache.has(id)) {
+        void fetchTicket(id)
+      }
+    }
+
     return {
       get state() {
         return state
       },
       refresh,
+      // ticket-hover
+      hoveredTicketId,
+      setHoveredTicket,
+      ticketDetail,
+      fetchTicket,
     }
   },
 })
