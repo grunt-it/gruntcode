@@ -1,12 +1,10 @@
 // grunt-it: clickable hivemind ticket-ref (#229) component for assistant chat (#233).
 //
-// v2 architecture (after v1 flicker bug):
-// - This component is just a colored clickable text. NO local tooltip — that was the source
-//   of the flicker (per-ref tooltip box overlapped its own text, hover→unhover→hover loop).
-// - Hover/leave events set a SINGLE global "currentlyHoveredTicket" signal in the Hivemind
-//   context. Detail fetch + caching also lives there (shared across all refs).
-// - The single floating <TicketHoverCard /> reads that signal and renders the detail at a
-//   fixed screen anchor — no overlap with any text, so no flicker.
+// shadcn-svelte HoverCard parity: hover the trigger → after a small open delay the card
+// appears near the trigger; cursor can move INTO the card and it stays open; close happens
+// after a small leave delay so a brief detour doesn't dismiss it. All the timer + sticky
+// behavior lives in the Hivemind context — this component just emits hover-enter / leave +
+// the cursor coords for anchoring.
 //
 // Click opens hivemind-ui at /tasks/<id> in the system browser.
 
@@ -16,6 +14,8 @@ import { useHivemind } from "../context/hivemind"
 
 const HIVEMIND_UI_BASE = process.env.HIVEMIND_UI_BASE ?? "http://localhost:5173"
 
+type MouseEventLike = { x: number; y: number }
+
 export function TicketRef(props: { id: number }) {
   const { theme } = useTheme()
   const hive = useHivemind()
@@ -24,8 +24,12 @@ export function TicketRef(props: { id: number }) {
     <text
       fg={theme.markdownLink ?? theme.primary}
       attributes={1}
-      onMouseOver={() => hive.setHoveredTicket(props.id)}
-      onMouseOut={() => hive.setHoveredTicket(null)}
+      onMouseOver={(evt: MouseEventLike) => {
+        hive.triggerHoverEnter(props.id, evt.x, evt.y)
+      }}
+      onMouseOut={() => {
+        hive.triggerHoverLeave()
+      }}
       onMouseUp={() => {
         open(`${HIVEMIND_UI_BASE}/tasks/${props.id}`).catch(() => {})
       }}

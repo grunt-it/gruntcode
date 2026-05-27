@@ -218,16 +218,26 @@ export const { use: useHivemind, provider: HivemindProvider } = createSimpleCont
     }
 
     // ----- ticket-hover state (#233) ---------------------------------------------------------
-    // One global "currently-hovered ticket id" signal. TicketRefs set/clear it on
-    // enter/leave; the single floating TicketHoverCard reads it and renders the detail.
-    // No per-ref tooltip boxes overlapping their own text → no flicker.
-    const [hoveredTicketId, setHoveredTicketId] = createSignal<number | null>(null)
+    // shadcn-svelte-style HoverCard: card pops up near the trigger after a small open delay,
+    // STAYS open if the cursor moves into the card (close delay gives time to traverse the gap),
+    // closes after a small leave delay so a brief detour doesn't dismiss it.
+    //
+    // Three signals power this:
+    //   hoveredTicket   — { id, anchorX, anchorY } | null. What the card renders + anchors to.
+    //   The card itself also calls setCardHover(true/false) on its own onMouseOver/Out to
+    //   suppress the close timer while the cursor is inside the card body.
+    type HoverAnchor = { id: number; anchorX: number; anchorY: number }
+    const [hoveredTicket, setHoveredTicketSignal] = createSignal<HoverAnchor | null>(null)
     const ticketCache = new Map<number, TicketDetail | null>()
     const ticketInflight = new Map<number, Promise<TicketDetail | null>>()
     const [ticketCacheTick, setTicketCacheTick] = createSignal(0)
+    let openTimer: ReturnType<typeof setTimeout> | undefined
+    let closeTimer: ReturnType<typeof setTimeout> | undefined
+    let cardHovered = false
+    const OPEN_DELAY_MS = 150
+    const CLOSE_DELAY_MS = 200
 
     function ticketDetail(id: number): TicketDetail | null | undefined {
-      // Read the tick so consumers re-render when the cache updates.
       ticketCacheTick()
       return ticketCache.get(id)
     }
@@ -262,10 +272,55 @@ export const { use: useHivemind, provider: HivemindProvider } = createSimpleCont
       return p
     }
 
-    function setHoveredTicket(id: number | null) {
-      setHoveredTicketId(id)
-      if (id !== null && !ticketCache.has(id)) {
-        void fetchTicket(id)
+    /** TicketRef calls this when mouse enters the trigger. Schedules the card open. */
+    function triggerHoverEnter(id: number, anchorX: number, anchorY: number) {
+      if (closeTimer) {
+        clearTimeout(closeTimer)
+        closeTimer = undefined
+      }
+      // Already showing this ticket? Just keep it open.
+      const current = hoveredTicket()
+      if (current?.id === id) return
+      // Schedule open. If user moves off the trigger before delay elapses, openTimer is
+      // cleared and nothing renders — no flash for accidental hovers.
+      if (openTimer) clearTimeout(openTimer)
+      openTimer = setTimeout(() => {
+        openTimer = undefined
+        setHoveredTicketSignal({ id, anchorX, anchorY })
+        if (!ticketCache.has(id)) void fetchTicket(id)
+      }, OPEN_DELAY_MS)
+    }
+
+    /** TicketRef calls this when mouse leaves the trigger. Schedules close, can be cancelled
+     * if the cursor moves into the card body (via setCardHovered(true)). */
+    function triggerHoverLeave() {
+      if (openTimer) {
+        clearTimeout(openTimer)
+        openTimer = undefined
+      }
+      if (closeTimer) clearTimeout(closeTimer)
+      closeTimer = setTimeout(() => {
+        closeTimer = undefined
+        if (!cardHovered) setHoveredTicketSignal(null)
+      }, CLOSE_DELAY_MS)
+    }
+
+    /** TicketHoverCard calls this when mouse enters/leaves the card body. Entering keeps
+     * the card open even after the trigger's leave-timer fires. */
+    function setCardHovered(hovered: boolean) {
+      cardHovered = hovered
+      if (hovered) {
+        if (closeTimer) {
+          clearTimeout(closeTimer)
+          closeTimer = undefined
+        }
+      } else {
+        // Mouse left the card → start the close timer (in case the trigger is also unhovered).
+        if (closeTimer) clearTimeout(closeTimer)
+        closeTimer = setTimeout(() => {
+          closeTimer = undefined
+          if (!cardHovered) setHoveredTicketSignal(null)
+        }, CLOSE_DELAY_MS)
       }
     }
 
@@ -275,8 +330,10 @@ export const { use: useHivemind, provider: HivemindProvider } = createSimpleCont
       },
       refresh,
       // ticket-hover
-      hoveredTicketId,
-      setHoveredTicket,
+      hoveredTicket,
+      triggerHoverEnter,
+      triggerHoverLeave,
+      setCardHovered,
       ticketDetail,
       fetchTicket,
     }
