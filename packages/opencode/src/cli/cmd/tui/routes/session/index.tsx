@@ -55,6 +55,7 @@ import { useSDK } from "@tui/context/sdk"
 import { useEditorContext } from "@tui/context/editor"
 import { useDialog } from "../../ui/dialog"
 import { TodoItem } from "../../component/todo-item"
+import { TicketRef } from "../../component/ticket-ref"
 import { DialogMessage } from "./dialog-message"
 import type { PromptInfo } from "../../component/prompt/history"
 import { DialogConfirm } from "@tui/ui/dialog-confirm"
@@ -1596,34 +1597,83 @@ function ReasoningHeader(props: {
   )
 }
 
-// grunt-it: linkify hivemind ticket refs (#229) inline so they render as clickable
-// markdown links pointing at the local hivemind-ui. The markdown renderer styles them
-// with theme.markdownLink (blue/cyan) and terminals supporting OSC 8 (iTerm2, kitty, etc.)
-// make the link clickable to open the URL. Falls back to colored-but-non-clickable text
-// in older terminals — still better than plain text.
-// Refs hivemind #233.
+// grunt-it: hivemind ticket refs (#229) in assistant text — render as interactive
+// <TicketRef> components with hover-preview + click-to-open-hivemind-ui. Refs #233.
+//
+// We split the text on the ticket-ref regex, render each non-matching segment through
+// the markdown renderer (so prose formatting, code blocks, etc. keep working), and
+// interleave <TicketRef> components for the matches. Trade-off: inline markdown features
+// that cross a #N boundary (rare — e.g. **bold #229 text**) won't span the split. Acceptable
+// for typical prose. The wins: clean visual (no [label](url) artifact), real hover tooltip,
+// proper click handler.
 const HIVEMIND_TICKET_RE = /(^|[^\w/#])#(\d{1,5})\b/g
-const HIVEMIND_UI_BASE = process.env.HIVEMIND_UI_BASE ?? "http://localhost:5173"
-function linkifyTicketRefs(text: string): string {
-  return text.replace(HIVEMIND_TICKET_RE, (_, prefix, id) => `${prefix}[#${id}](${HIVEMIND_UI_BASE}/tasks/${id})`)
+
+type TextSegment = { kind: "text"; text: string } | { kind: "ticket"; id: number }
+
+function splitOnTicketRefs(text: string): TextSegment[] {
+  const segments: TextSegment[] = []
+  let lastIndex = 0
+  HIVEMIND_TICKET_RE.lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = HIVEMIND_TICKET_RE.exec(text)) !== null) {
+    const [whole, prefix, idStr] = match
+    const start = match.index + prefix.length
+    if (start > lastIndex) {
+      segments.push({ kind: "text", text: text.slice(lastIndex, start) })
+    }
+    segments.push({ kind: "ticket", id: Number(idStr) })
+    lastIndex = match.index + whole.length
+  }
+  if (lastIndex < text.length) {
+    segments.push({ kind: "text", text: text.slice(lastIndex) })
+  }
+  // Optimization: if no ticket matches, return a single text segment (caller can fast-path)
+  return segments.length > 0 ? segments : [{ kind: "text", text }]
 }
 
 function TextPart(props: { last: boolean; part: TextPart; message: AssistantMessage }) {
   const ctx = use()
   const { theme, syntax } = useTheme()
+  const segments = createMemo(() => splitOnTicketRefs(props.part.text.trim()))
   return (
     <Show when={props.part.text.trim()}>
       <box id={"text-" + props.part.id} paddingLeft={3} marginTop={1} flexShrink={0}>
-        <markdown
-          syntaxStyle={syntax()}
-          streaming={true}
-          internalBlockMode="top-level"
-          content={linkifyTicketRefs(props.part.text.trim())}
-          tableOptions={{ style: "grid" }}
-          conceal={ctx.conceal()}
-          fg={theme.markdownText}
-          bg={theme.background}
-        />
+        <Show
+          when={segments().some((s) => s.kind === "ticket")}
+          fallback={
+            <markdown
+              syntaxStyle={syntax()}
+              streaming={true}
+              internalBlockMode="top-level"
+              content={props.part.text.trim()}
+              tableOptions={{ style: "grid" }}
+              conceal={ctx.conceal()}
+              fg={theme.markdownText}
+              bg={theme.background}
+            />
+          }
+        >
+          <box flexDirection="row" flexWrap="wrap">
+            <For each={segments()}>
+              {(seg) =>
+                seg.kind === "text" ? (
+                  <markdown
+                    syntaxStyle={syntax()}
+                    streaming={true}
+                    internalBlockMode="top-level"
+                    content={seg.text}
+                    tableOptions={{ style: "grid" }}
+                    conceal={ctx.conceal()}
+                    fg={theme.markdownText}
+                    bg={theme.background}
+                  />
+                ) : (
+                  <TicketRef id={seg.id} />
+                )
+              }
+            </For>
+          </box>
+        </Show>
       </box>
     </Show>
   )
