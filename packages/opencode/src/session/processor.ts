@@ -27,6 +27,8 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import * as DateTime from "effect/DateTime"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { MCP } from "@/mcp"
+import { HivemindLoopHook } from "./hivemind-loop-hook"
 import { Usage, type LLMEvent } from "@opencode-ai/llm"
 
 const DOOM_LOOP_THRESHOLD = 3
@@ -101,6 +103,12 @@ export const layer = Layer.effect(
     const image = yield* Image.Service
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
+    // MCP.Service is yielded as Option (#266 Phase 1 hivemind loop hook). At production
+    // runtime the prompt layer provides MCP (session/prompt.ts:1649). In test layers MCP is
+    // typically NOT provided — yielding as Option lets the processor cleanly degrade to
+    // no-op for the hook when MCP isn't in context, instead of forcing every test layer to
+    // provide an unused service.
+    const mcpOption = yield* Effect.serviceOption(MCP.Service)
 
     const create = Effect.fn("SessionProcessor.create")(function* (input: Input) {
       // Pre-capture snapshot before the LLM stream starts. The AI SDK
@@ -498,6 +506,14 @@ export const layer = Layer.effect(
               })
             }
             yield* completeToolCall(value.id, output)
+            // Hivemind loop primitive (#266 Phase 1): bump last_loop_progress_at after every
+            // successful tool result. Cheap signal that the peer is actively driving its loop —
+            // evaluateLoop uses this to distinguish "made progress" from "silent stall".
+            yield* HivemindLoopHook.loopProgress({
+              enabled: flags.hivemindLoopEnabled,
+              mcp: mcpOption,
+              scope,
+            })
             return
           }
 
@@ -607,6 +623,18 @@ export const layer = Layer.effect(
                 messageID: ctx.assistantMessage.parentID,
               })
               .pipe(Effect.ignore, Effect.forkIn(scope))
+            // Hivemind loop primitive (#266 Phase 1): fire the turn-end event into hivemind-mcp.
+            // The MCP runs evaluateLoop + decides auto-wake / auto-escalate / no-op. Off by
+            // default; opt-in via OPENCODE_HIVEMIND_LOOP_ENABLED. Always fire-and-forget —
+            // hivemind failure must never break the TUI.
+            yield* HivemindLoopHook.recordTurnEnd({
+              enabled: flags.hivemindLoopEnabled,
+              mcp: mcpOption,
+              sessionID: ctx.sessionID,
+              messageID: ctx.assistantMessage.id,
+              finishReason: value.reason,
+              scope,
+            })
             if (
               !ctx.assistantMessage.summary &&
               isOverflow({ cfg: yield* config.get(), tokens: usage.tokens, model: ctx.model })
