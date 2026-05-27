@@ -55,14 +55,16 @@ export class Service extends ConfigService.Service<Service>()("@opencode/Runtime
   bashDefaultTimeoutMs: positiveInteger("OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"),
   experimentalNativeLlm: bool("OPENCODE_EXPERIMENTAL_NATIVE_LLM"),
   /**
-   * Loop primitive (#266 Phase 1) — when true, the session processor fires
+   * Loop primitive (#266 Phase 2 — default-on) — when true, the session processor fires
    * hivemind_record_turn_end after every step-finish + hivemind_loop_progress after every
    * tool-result. The MCP then decides whether to auto-wake the same peer (continue), wake
-   * the parent (escalate), or no-op. Default off in Phase 1; opt-in per-tab via env var;
-   * planned default-on in Phase 2 after validating in the wild. Failure of the hook is
-   * always non-fatal — the TUI is never blocked or thrown into on a hivemind error.
+   * the parent (escalate / await-review), or no-op. Default ON as of Phase 2 — Phase 1
+   * proved the hook is reliably non-fatal (forkIn(scope) + interrupted-error swallow) and
+   * the auto-drive payoff is significant. To opt OUT for a specific tab/session, set
+   * `OPENCODE_HIVEMIND_LOOP_ENABLED=0` in the env. Failure of the hook is always non-fatal —
+   * the TUI is never blocked or thrown into on a hivemind error.
    */
-  hivemindLoopEnabled: bool("OPENCODE_HIVEMIND_LOOP_ENABLED"),
+  hivemindLoopEnabled: Config.boolean("OPENCODE_HIVEMIND_LOOP_ENABLED").pipe(Config.withDefault(true)),
   client: Config.string("OPENCODE_CLIENT").pipe(Config.withDefault("cli")),
 }) {}
 
