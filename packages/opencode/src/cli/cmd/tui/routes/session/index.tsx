@@ -1682,26 +1682,24 @@ function TextPart(props: { last: boolean; part: TextPart; message: AssistantMess
             />
           }
         >
-          <box flexDirection="row" flexWrap="wrap">
+          {/*
+            #250 fix: render the entire paragraph as a single `<text>` block with
+            inline `<span>` text segments and `<TicketRef>` (`<a href>`) refs.
+            Previous shape was `<box flexDirection="row" flexWrap="wrap">` with one
+            `<markdown>` per text segment + one `<text>` per ref — that made each
+            segment a separate flex item, so the flex-wrap engine reordered them
+            per-item and refs landed on the wrong visual line.
+
+            Trade-off (acknowledged in the original splitOnTicketRefs comment): we
+            lose inline markdown rendering (bold/italic/code) for paragraphs that
+            contain at least one #N ref. Refs themselves render correctly inline
+            with proper text-wrap, which is the priority for #250.
+          */}
+          <text fg={theme.markdownText} bg={theme.background}>
             <For each={segments()}>
-              {(seg) =>
-                seg.kind === "text" ? (
-                  <markdown
-                    syntaxStyle={syntax()}
-                    streaming={true}
-                    internalBlockMode="top-level"
-                    content={seg.text}
-                    tableOptions={{ style: "grid" }}
-                    conceal={ctx.conceal()}
-                    fg={theme.markdownText}
-                    bg={theme.background}
-                  />
-                ) : (
-                  <TicketRef id={seg.id} />
-                )
-              }
+              {(seg) => (seg.kind === "text" ? <span>{seg.text}</span> : <TicketRef id={seg.id} />)}
             </For>
-          </box>
+          </text>
         </Show>
       </box>
     </Show>
