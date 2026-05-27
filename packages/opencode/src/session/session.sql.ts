@@ -47,6 +47,12 @@ export const SessionTable = sqliteTable(
       providerID: string
       variant?: string
     }>(),
+    // grunt-it: stable peer-id (terminal/tab identity) so `gruntcode -s <session>` alone
+    // recovers the hivemind peer-id from the row instead of requiring --peer-id every time.
+    // Set on session creation from getPeerID() (which reads OPENCODE_PEER_ID env from --peer-id
+    // flag). Pre-existing sessions have NULL here; thread.ts catches up when --peer-id is given
+    // alongside --session on resume.
+    peer_id: text(),
     ...Timestamps,
     time_compacting: integer(),
     time_archived: integer(),

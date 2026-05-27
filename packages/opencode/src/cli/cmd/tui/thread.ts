@@ -23,6 +23,8 @@ import {
 } from "@opencode-ai/core/util/opencode-process"
 import { validateSession } from "./validate-session"
 import { createServer } from "node:net"
+import { Database as Bunite } from "bun:sqlite"
+import { getPath as getDbPath } from "@/storage/db"
 
 // grunt-it: pick a free localhost TCP port pre-spawn so we can stamp it into the
 // worker's env (and thus MCP children's env) before the worker starts. This lets
@@ -151,7 +153,58 @@ export const TuiThreadCommand = cmd({
       // spawn or async work so the OS cannot kill the process group.
       win32DisableProcessedInput()
 
-      setPeerID(args["peer-id"])
+      // grunt-it: peer-id resolution for the session lifecycle.
+      //
+      // Priority order:
+      // 1. Explicit --peer-id flag (always wins; lets a user re-launch with a NEW identity)
+      // 2. peer_id stored on the session row (when --session <id> is used to resume)
+      // 3. unset (worker spawns without OPENCODE_PEER_ID; MCP child falls back to <cwd>#<pid>)
+      //
+      // Persistence happens in Session.createNext (captures getPeerID() into the new row).
+      // So a user only ever types --peer-id ONCE per session — `gruntcode -s <id>` alone
+      // recovers everything afterwards.
+      //
+      // Catch-up: if --peer-id is explicitly given alongside --session, we update the row
+      // so old sessions (created before the column existed) get backfilled on next resume.
+      let resolvedPeerID = args["peer-id"]
+      if (args.session && !resolvedPeerID) {
+        try {
+          const db = new Bunite(getDbPath(), { readonly: true })
+          const row = db
+            .query<{ peer_id: string | null }, [string]>(`SELECT peer_id FROM session WHERE id = ?`)
+            .get(args.session)
+          db.close()
+          if (row?.peer_id) {
+            resolvedPeerID = row.peer_id
+            Log.Default.info("peer-id recovered from session row", { sessionID: args.session, peerID: resolvedPeerID })
+          }
+        } catch (err) {
+          Log.Default.warn("could not read peer_id from session row (continuing without)", {
+            sessionID: args.session,
+            error: errorMessage(err),
+          })
+        }
+      } else if (args.session && args["peer-id"]) {
+        // Backfill catch-up: explicit flag + resume → persist onto the row for next time.
+        try {
+          const db = new Bunite(getDbPath())
+          db.query<never, [string, string]>(`UPDATE session SET peer_id = ? WHERE id = ?`).run(
+            args["peer-id"],
+            args.session,
+          )
+          db.close()
+          Log.Default.info("peer-id backfilled onto existing session row", {
+            sessionID: args.session,
+            peerID: args["peer-id"],
+          })
+        } catch (err) {
+          Log.Default.warn("could not backfill peer_id onto session row (continuing)", {
+            sessionID: args.session,
+            error: errorMessage(err),
+          })
+        }
+      }
+      setPeerID(resolvedPeerID)
 
       if (args.fork && !args.continue && !args.session) {
         UI.error("--fork requires --continue or --session")
