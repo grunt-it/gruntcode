@@ -584,13 +584,45 @@ const info = (row: typeof MessageTable.$inferSelect) =>
     sessionID: row.session_id,
   }) as Info
 
-const part = (row: typeof PartTable.$inferSelect) =>
-  ({
-    ...row.data,
+// Read-time orphan threshold: a tool part whose state still says "running" or
+// "pending" 60s after it was first written almost certainly belongs to a
+// process that died mid-execution (kill -9, panic, OOM). Hydrating such a part
+// raw crashes the TUI on resume (renderers assume completed tool parts have
+// state.output) — see hivemind #254. We surface them as a synthetic error
+// state instead, so the renderer treats them like any other failed tool call.
+const ORPHAN_TOOL_STALE_MS = 60_000
+
+const part = (row: typeof PartTable.$inferSelect) => {
+  // PartData = Omit<Part, "id" | "sessionID" | "messageID">. Cast to Part for
+  // discriminated-union narrowing (Omit doesn't distribute over unions in TS).
+  const data = row.data as Part
+  if (data.type === "tool" && (data.state.status === "running" || data.state.status === "pending")) {
+    const start = data.state.status === "running" ? data.state.time.start : row.time_created
+    const orphanAgeMs = Date.now() - start
+    if (orphanAgeMs >= ORPHAN_TOOL_STALE_MS) {
+      const baseMetadata = data.state.status === "running" ? data.state.metadata : undefined
+      return {
+        ...data,
+        state: {
+          status: "error",
+          input: data.state.input,
+          error: "[Tool execution was interrupted — process terminated before completion]",
+          time: { start, end: start + orphanAgeMs },
+          metadata: { ...(baseMetadata ?? {}), interrupted: true },
+        },
+        id: row.id,
+        sessionID: row.session_id,
+        messageID: row.message_id,
+      } satisfies Part
+    }
+  }
+  return {
+    ...data,
     id: row.id,
     sessionID: row.session_id,
     messageID: row.message_id,
-  }) as Part
+  } satisfies Part
+}
 
 const older = (row: Cursor) =>
   or(lt(MessageTable.time_created, row.time), and(eq(MessageTable.time_created, row.time), lt(MessageTable.id, row.id)))
