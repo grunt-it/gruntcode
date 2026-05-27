@@ -103,6 +103,7 @@ export function fromRow(row: SessionRow): Info {
     share,
     revert,
     permission: row.permission ? [...row.permission] : undefined,
+    peerID: row.peer_id ?? undefined,
     time: {
       created: row.time_created,
       updated: row.time_updated,
@@ -138,6 +139,7 @@ export function toRow(info: Info) {
     tokens_cache_write: (info.tokens ?? EmptyTokens).cache.write,
     revert: info.revert ?? null,
     permission: info.permission,
+    peer_id: info.peerID ?? null,
     time_created: info.time.created,
     time_updated: info.time.updated,
     time_compacting: info.time.compacting,
@@ -225,6 +227,10 @@ export const Info = Schema.Struct({
   time: Time,
   permission: optionalOmitUndefined(Permission.Ruleset),
   revert: optionalOmitUndefined(Revert),
+  /** grunt-it: stable peer-id this session was launched under. Lets `gruntcode -s <id>` alone
+   * recover hivemind identity without requiring --peer-id every restart. NULL for sessions
+   * created before the column existed. */
+  peerID: optionalOmitUndefined(Schema.String),
 }).annotate({ identifier: "Session" })
 export type Info = Types.DeepMutable<Schema.Schema.Type<typeof Info>>
 
@@ -536,11 +542,13 @@ export const layer: Layer.Layer<
       // grunt-it: prefer a named slug derived from the peer-id (--peer-id flag / OPENCODE_PEER_ID env)
       // or the cwd basename when no peer-id is set. Falls back to the random adjective-noun slug
       // only when neither is available (subagent sessions with no directory, edge cases).
-      const slugBase = getPeerID() ?? (input.directory ? path.basename(input.directory) : undefined)
+      const peerID = getPeerID()
+      const slugBase = peerID ?? (input.directory ? path.basename(input.directory) : undefined)
       const slug = slugBase ? Slug.createNamed(slugBase) : Slug.create()
       const result: Info = {
         id: SessionID.descending(input.id),
         slug,
+        peerID,
         version: InstallationVersion,
         projectID: ctx.project.id,
         directory: input.directory,
