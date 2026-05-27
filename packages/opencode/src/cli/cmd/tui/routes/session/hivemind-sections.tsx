@@ -2,10 +2,17 @@
 // Sidebar between the session title block and the gruntcode footer, so we add hivemind
 // awareness to the operator's already-visible side panel rather than introducing a
 // second sidebar (saves screen real estate, no layout-width math required).
+//
+// Sidebar interior width is ~38 cols (Sidebar is 42 wide, with paddingLeft=2 + paddingRight=2).
+// Text needs to either word-wrap explicitly OR get truncated to fit, because <text> in opentui
+// clips horizontally by default (no auto-wrap on inline rows). We split each peer / inbox row
+// into TWO explicit lines: compact identifier on line 1, wrapped/truncated detail on line 2.
 
 import { For, Show, createMemo } from "solid-js"
 import { useHivemind } from "../../context/hivemind"
 import { useTheme } from "../../context/theme"
+
+const SIDEBAR_INNER_COLS = 38
 
 function relativeTime(iso: string): string {
   const t = new Date(iso).getTime()
@@ -16,6 +23,11 @@ function relativeTime(iso: string): string {
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m`
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h`
   return `${Math.floor(diff / 86_400_000)}d`
+}
+
+function truncate(s: string, max: number): string {
+  if (s.length <= max) return s
+  return s.slice(0, max - 1) + "…"
 }
 
 export function HivemindSections() {
@@ -44,60 +56,76 @@ export function HivemindSections() {
       <Show
         when={hive.state.self}
         fallback={
-          <text fg={theme.textMuted}>
-            <span>not announced yet — set --peer-id to register</span>
+          <text fg={theme.textMuted} wrapMode="word">
+            not announced yet — set --peer-id to register
           </text>
         }
       >
         {(self) => (
-          <box>
+          <box flexDirection="column">
             <text fg={theme.text}>
               <b>you · </b>
-              <span>{self().id}</span>
+              <span>{truncate(self().id, SIDEBAR_INNER_COLS - 6)}</span>
             </text>
             <Show when={self().summary}>
-              <text fg={theme.textMuted}>{self().summary}</text>
+              <text fg={theme.textMuted} wrapMode="word">
+                {self().summary}
+              </text>
             </Show>
             <text fg={theme.textMuted}>
-              <span>{wakeable() ? `✓ wakeable :${self().http_port}` : "✗ not wakeable"}</span>
+              {wakeable() ? `✓ wakeable :${self().http_port}` : "✗ not wakeable"}
               {" · "}
-              <span>{relativeTime(self().last_seen_at)} ago</span>
+              {relativeTime(self().last_seen_at)} ago
             </text>
           </box>
         )}
       </Show>
 
-      {/* Section 2 — live peers */}
+      {/* Section 2 — live peers. Each peer = 2 lines: id+time on line 1, summary on line 2.
+          Summary uses wrapMode="word" so long summaries wrap inside the card width instead of
+          clipping (caught 2026-05-27: "nik-t" truncation visible at right edge). */}
       <Show when={hive.state.peers.length > 0}>
-        <box>
+        <box flexDirection="column">
           <text fg={theme.text}>
             <b>peers ({hive.state.peers.length})</b>
           </text>
           <For each={hive.state.peers.slice(0, 6)}>
             {(peer) => (
-              <text fg={theme.textMuted}>
-                <span style={{ fg: theme.success }}>·</span> <b>{peer.id}</b>
+              <box flexDirection="column" paddingTop={0}>
+                <text fg={theme.textMuted}>
+                  <span style={{ fg: theme.success }}>·</span> <b>{truncate(peer.id, 26)}</b>
+                  <span> {relativeTime(peer.last_seen_at)}</span>
+                </text>
                 <Show when={peer.summary}>
-                  <span> — {(peer.summary ?? "").slice(0, 40)}</span>
+                  <text fg={theme.textMuted} wrapMode="word">
+                    {"  "}
+                    {truncate(peer.summary ?? "", 90)}
+                  </text>
                 </Show>
-              </text>
+              </box>
             )}
           </For>
         </box>
       </Show>
 
-      {/* Section 3 — inbox */}
+      {/* Section 3 — inbox. Each DM = 2 lines: sender on line 1, wrapped subject/body on line 2. */}
       <Show when={hive.state.inbox.length > 0}>
-        <box>
+        <box flexDirection="column">
           <text fg={theme.text}>
             <b>inbox · </b>
             <span style={{ fg: theme.warning }}>{hive.state.inbox.length} unread</span>
           </text>
           <For each={hive.state.inbox.slice(0, 4)}>
             {(msg) => (
-              <text fg={theme.textMuted}>
-                <b>{msg.from_peer}</b>: {(msg.subject ?? msg.body).slice(0, 50)}
-              </text>
+              <box flexDirection="column">
+                <text fg={theme.textMuted}>
+                  <b>{truncate(msg.from_peer, 28)}</b>
+                </text>
+                <text fg={theme.textMuted} wrapMode="word">
+                  {"  "}
+                  {truncate(msg.subject ?? msg.body, 110)}
+                </text>
+              </box>
             )}
           </For>
         </box>
