@@ -54,6 +54,15 @@ export class Service extends ConfigService.Service<Service>()("@opencode/Runtime
   outputTokenMax: positiveInteger("OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"),
   bashDefaultTimeoutMs: positiveInteger("OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"),
   experimentalNativeLlm: bool("OPENCODE_EXPERIMENTAL_NATIVE_LLM"),
+  /**
+   * Loop primitive (#266 Phase 1) — when true, the session processor fires
+   * hivemind_record_turn_end after every step-finish + hivemind_loop_progress after every
+   * tool-result. The MCP then decides whether to auto-wake the same peer (continue), wake
+   * the parent (escalate), or no-op. Default off in Phase 1; opt-in per-tab via env var;
+   * planned default-on in Phase 2 after validating in the wild. Failure of the hook is
+   * always non-fatal — the TUI is never blocked or thrown into on a hivemind error.
+   */
+  hivemindLoopEnabled: bool("OPENCODE_HIVEMIND_LOOP_ENABLED"),
   client: Config.string("OPENCODE_CLIENT").pipe(Config.withDefault("cli")),
 }) {}
 
