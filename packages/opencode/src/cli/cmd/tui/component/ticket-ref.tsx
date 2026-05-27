@@ -1,40 +1,35 @@
 // grunt-it: clickable hivemind ticket-ref (#229) component for assistant chat (#233).
 //
-// shadcn-svelte HoverCard parity: hover the trigger → after a small open delay the card
-// appears near the trigger; cursor can move INTO the card and it stays open; close happens
-// after a small leave delay so a brief detour doesn't dismiss it. All the timer + sticky
-// behavior lives in the Hivemind context — this component just emits hover-enter / leave +
-// the cursor coords for anchoring.
+// **Inline-flowing rendering** (#250): TicketRef renders as an `<a>` (LinkRenderable)
+// — an OpenTUI TextNode that flows inline within a parent `<text>` block. Previously
+// this was a top-level `<text>` widget, which when interleaved with `<markdown>` text
+// segments under `<box flexDirection="row" flexWrap="wrap">` caused refs to land on
+// the wrong line: each segment became its own flex item and the flex-wrap engine
+// reordered them per-item instead of flowing per-character. As an inline TextNode
+// the ref takes part in TextRenderable's character-level wrap math.
 //
-// Click opens hivemind-ui at /tasks/<id> in the system browser.
+// **OSC-8 hyperlink** via the `href` prop: the terminal emulator (iTerm, Ghostty,
+// Kitty, modern Terminal.app) renders the ref as a real clickable hyperlink that
+// opens hivemind-ui at /tasks/<id>. ⌘-click in iTerm; plain click in some others.
+// Trade-off (accepted for #250): we lose the previously-shipped React hover-card
+// preview because TextNodes (`<a>`/`<span>`) don't accept their own mouse-event
+// listeners — they're part of the parent `<text>`'s render. A separate ticket can
+// reintroduce a hover preview via a different rendering strategy (e.g. a coordinated
+// overlay anchored to the `<text>`'s cursor position).
 
-import open from "open"
 import { useTheme } from "../context/theme"
-import { useHivemind } from "../context/hivemind"
 
 const HIVEMIND_UI_BASE = process.env.HIVEMIND_UI_BASE ?? "http://localhost:5173"
 
-type MouseEventLike = { x: number; y: number }
-
 export function TicketRef(props: { id: number }) {
   const { theme } = useTheme()
-  const hive = useHivemind()
 
   return (
-    <text
-      fg={theme.markdownLink ?? theme.primary}
-      attributes={1}
-      onMouseOver={(evt: MouseEventLike) => {
-        hive.triggerHoverEnter(props.id, evt.x, evt.y)
-      }}
-      onMouseOut={() => {
-        hive.triggerHoverLeave()
-      }}
-      onMouseUp={() => {
-        open(`${HIVEMIND_UI_BASE}/tasks/${props.id}`).catch(() => {})
-      }}
+    <a
+      href={`${HIVEMIND_UI_BASE}/tasks/${props.id}`}
+      style={{ fg: theme.markdownLink ?? theme.primary, attributes: 1 }}
     >
       #{props.id}
-    </text>
+    </a>
   )
 }
