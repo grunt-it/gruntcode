@@ -19,9 +19,10 @@ type MCPShape = MCP.Interface
  * pipes through Effect.ignore + Effect.forkIn(scope) so the TUI never blocks on the MCP
  * call and never sees an exception from a slow / failing hivemind connection.
  *
- * Feature-flagged: opt-in via OPENCODE_HIVEMIND_LOOP_ENABLED=1 (RuntimeFlags.hivemindLoopEnabled).
- * Off by default in Phase 1 so users can adopt per-tab + we can flip the global default in
- * Phase 2 after validating in the wild.
+ * Feature-flagged via OPENCODE_HIVEMIND_LOOP_ENABLED (RuntimeFlags.hivemindLoopEnabled).
+ * DEFAULT-ON as of Phase 2 — Phase 1 validation proved the hook is reliably non-fatal +
+ * the auto-drive payoff is significant. To opt out for a specific tab/session, set
+ * OPENCODE_HIVEMIND_LOOP_ENABLED=0 in the env.
  */
 
 const log = Log.create({ service: "session.hivemind-loop-hook" })
@@ -90,7 +91,7 @@ function buildTurnSummary(messageId: MessageV2.Assistant["id"]) {
  * The MCP wraps evaluateLoop + fires the wake/escalation internally. This side just sends
  * the turn-end event and forgets.
  *
- * Off when OPENCODE_HIVEMIND_LOOP_ENABLED is unset/false — silent no-op.
+ * Silent no-op when OPENCODE_HIVEMIND_LOOP_ENABLED=0 (Phase 2 default is ON).
  */
 export const recordTurnEnd = Effect.fn("HivemindLoopHook.recordTurnEnd")(function* (input: {
   enabled: boolean
@@ -136,7 +137,7 @@ export const recordTurnEnd = Effect.fn("HivemindLoopHook.recordTurnEnd")(functio
  * Fire hivemind_loop_progress after a tool-result. Cheap call — just bumps
  * last_loop_progress_at so evaluate_loop sees fresh activity. Same fire-and-forget guarantee.
  *
- * Off when OPENCODE_HIVEMIND_LOOP_ENABLED is unset/false — silent no-op.
+ * Silent no-op when OPENCODE_HIVEMIND_LOOP_ENABLED=0 (Phase 2 default is ON).
  */
 export const loopProgress = Effect.fn("HivemindLoopHook.loopProgress")(function* (input: {
   enabled: boolean

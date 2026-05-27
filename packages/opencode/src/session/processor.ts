@@ -623,10 +623,11 @@ export const layer = Layer.effect(
                 messageID: ctx.assistantMessage.parentID,
               })
               .pipe(Effect.ignore, Effect.forkIn(scope))
-            // Hivemind loop primitive (#266 Phase 1): fire the turn-end event into hivemind-mcp.
-            // The MCP runs evaluateLoop + decides auto-wake / auto-escalate / no-op. Off by
-            // default; opt-in via OPENCODE_HIVEMIND_LOOP_ENABLED. Always fire-and-forget —
-            // hivemind failure must never break the TUI.
+            // Hivemind loop primitive (#266 Phase 2 — default-on): fire the turn-end event into
+            // hivemind-mcp. The MCP runs evaluateLoop + decides auto-wake / auto-escalate /
+            // await-review / no-op. ON by default; opt out per tab via
+            // OPENCODE_HIVEMIND_LOOP_ENABLED=0. Always fire-and-forget — hivemind failure must
+            // never break the TUI.
             yield* HivemindLoopHook.recordTurnEnd({
               enabled: flags.hivemindLoopEnabled,
               mcp: mcpOption,
