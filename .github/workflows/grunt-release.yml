@@ -36,8 +36,6 @@ jobs:
         include:
           - host: macos-14
             target_name: gruntcode-darwin-arm64
-          - host: macos-13
-            target_name: gruntcode-darwin-x64
           - host: ubuntu-24.04
             target_name: gruntcode-linux-x64
           - host: ubuntu-24.04-arm
