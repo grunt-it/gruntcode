@@ -264,7 +264,10 @@ if (Script.release) {
       await $`zip -r ../../${key}.zip *`.cwd(`dist/${key}/bin`)
     }
   }
-  await $`gh release upload v${Script.version} ./dist/*.zip ./dist/*.tar.gz --clobber --repo ${process.env.GH_REPO}`
+  // Upload in two steps — Linux produces .tar.gz only, macOS/Windows produce .zip only.
+  // Bun's shell throws on empty globs, so .nothrow() prevents false failures.
+  await $`gh release upload v${Script.version} ./dist/*.zip --clobber --repo ${process.env.GH_REPO}`.nothrow()
+  await $`gh release upload v${Script.version} ./dist/*.tar.gz --clobber --repo ${process.env.GH_REPO}`.nothrow()
 }
 
 export { binaries }
