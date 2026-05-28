@@ -1,6 +1,6 @@
 import { useProject } from "@tui/context/project"
 import { useSync } from "@tui/context/sync"
-import { createMemo, Show } from "solid-js"
+import { createMemo, ErrorBoundary, Show } from "solid-js"
 import { useTheme } from "../../context/theme"
 import { useTuiConfig } from "../../context/tui-config"
 import { InstallationChannel, InstallationVersion } from "@opencode-ai/core/installation/version"
@@ -90,8 +90,19 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
             </TuiPluginRuntime.Slot>
             <TuiPluginRuntime.Slot name="sidebar_content" session_id={props.sessionID} />
             {/* grunt-it: hivemind ambient awareness (#229). Polls hivemind-api on
-                localhost:7890; falls back to "api offline" placeholder when unreachable. */}
-            <HivemindSections />
+                localhost:7890; falls back to "api offline" placeholder when unreachable.
+                Wrapped in a local ErrorBoundary (#276) so a render bug in the sidebar
+                never takes down the whole TUI — the rest of the session stays usable
+                and the sidebar shows a one-line failure note instead. */}
+            <ErrorBoundary
+              fallback={(err) => (
+                <text fg={theme.error} wrapMode="word">
+                  hivemind sidebar disabled (render error: {String(err?.message ?? err).slice(0, 80)})
+                </text>
+              )}
+            >
+              <HivemindSections />
+            </ErrorBoundary>
           </box>
         </scrollbox>
 

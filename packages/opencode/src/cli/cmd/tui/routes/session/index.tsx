@@ -1113,6 +1113,20 @@ export function Session() {
   // snap to bottom when session changes
   createEffect(on(() => route.sessionID, toBottom))
 
+  // track whether user has scrolled up from the bottom
+  const [showJumpToFront, setShowJumpToFront] = createSignal(false)
+  createEffect(() => {
+    if (!scroll || scroll.isDestroyed) return
+    const check = () => {
+      if (!scroll || scroll.isDestroyed) return
+      const atBottom = scroll.y + scroll.height >= scroll.scrollHeight - 2
+      setShowJumpToFront(!atBottom)
+    }
+    check()
+    const interval = setInterval(check, 200)
+    return () => clearInterval(interval)
+  })
+
   return (
     <PathFormatterProvider path={session()?.directory}>
       <context.Provider
@@ -1250,6 +1264,22 @@ export function Session() {
                   )}
                 </For>
               </scrollbox>
+              <Show when={showJumpToFront()}>
+                <box
+                  justifyContent="center"
+                  flexShrink={0}
+                  height={1}
+                >
+                  <text
+                    fg={theme.accent}
+                    onMouseUp={() => {
+                      toBottom()
+                    }}
+                  >
+                    ↓ Jump to latest message
+                  </text>
+                </box>
+              </Show>
               <box flexShrink={0}>
                 <Show when={permissions().length > 0}>
                   <PermissionPrompt request={permissions()[0]} />

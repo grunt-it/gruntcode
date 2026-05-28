@@ -14,9 +14,18 @@ import { useTheme } from "../../context/theme"
 
 const SIDEBAR_INNER_COLS = 38
 
-function relativeTime(iso: string): string {
+// Defensive accessors — see #276. The reactive store should always hold these as
+// arrays, but a render-time race between provider init + first poll has been
+// observed to surface them as undefined, crashing the For/Show internals with
+// "U.length" undefined. Treat the proxy as "may yield undefined this tick" and
+// fall through to an empty array so the sidebar degrades gracefully.
+const peersOf = (hive: ReturnType<typeof useHivemind>) => hive.state.peers ?? []
+const inboxOf = (hive: ReturnType<typeof useHivemind>) => hive.state.inbox ?? []
+
+function relativeTime(iso: string | null | undefined): string {
+  if (!iso) return "?"
   const t = new Date(iso).getTime()
-  if (!Number.isFinite(t)) return iso
+  if (!Number.isFinite(t)) return "?"
   const diff = Date.now() - t
   if (diff < 0) return "now"
   if (diff < 60_000) return `${Math.floor(diff / 1000)}s`
@@ -25,7 +34,8 @@ function relativeTime(iso: string): string {
   return `${Math.floor(diff / 86_400_000)}d`
 }
 
-function truncate(s: string, max: number): string {
+function truncate(s: string | null | undefined, max: number): string {
+  if (!s) return ""
   if (s.length <= max) return s
   return s.slice(0, max - 1) + "…"
 }
@@ -37,6 +47,24 @@ export function HivemindSections() {
   const wakeable = createMemo(() => {
     const s = hive.state.self
     return !!(s?.http_port && s?.session_id)
+  })
+
+  // Memoize the array reads so reactivity sees a stable reference per tick and
+  // we never reach into a possibly-undefined proxy field twice in the same render.
+  const peers = createMemo(() => peersOf(hive))
+  const inbox = createMemo(() => inboxOf(hive))
+  const visiblePeers = createMemo(() => peers().slice(0, 6))
+  const visibleInbox = createMemo(() => inbox().slice(0, 4))
+  // Same defense for the board — counts are scalars (not arrays) so the crash
+  // shape would be different, but a missing nested object would still surface
+  // here. Default to zeros so the panel renders cleanly until the first poll.
+  const board = createMemo(() => hive.state.board ?? {
+    open: 0,
+    claimed: 0,
+    done24h: 0,
+    stale: 0,
+    mineClaimedCount: 0,
+    highPrioMine: 0,
   })
 
   return (
@@ -84,12 +112,12 @@ export function HivemindSections() {
       {/* Section 2 — live peers. Each peer = 2 lines: id+time on line 1, summary on line 2.
           Summary uses wrapMode="word" so long summaries wrap inside the card width instead of
           clipping (caught 2026-05-27: "nik-t" truncation visible at right edge). */}
-      <Show when={hive.state.peers.length > 0}>
+      <Show when={peers().length > 0}>
         <box flexDirection="column">
           <text fg={theme.text}>
-            <b>peers ({hive.state.peers.length})</b>
+            <b>peers ({peers().length})</b>
           </text>
-          <For each={hive.state.peers.slice(0, 6)}>
+          <For each={visiblePeers()}>
             {(peer) => (
               <box flexDirection="column" paddingTop={0}>
                 <text fg={theme.textMuted}>
@@ -109,13 +137,13 @@ export function HivemindSections() {
       </Show>
 
       {/* Section 3 — inbox. Each DM = 2 lines: sender on line 1, wrapped subject/body on line 2. */}
-      <Show when={hive.state.inbox.length > 0}>
+      <Show when={inbox().length > 0}>
         <box flexDirection="column">
           <text fg={theme.text}>
             <b>inbox · </b>
-            <span style={{ fg: theme.warning }}>{hive.state.inbox.length} unread</span>
+            <span style={{ fg: theme.warning }}>{inbox().length} unread</span>
           </text>
-          <For each={hive.state.inbox.slice(0, 4)}>
+          <For each={visibleInbox()}>
             {(msg) => (
               <box flexDirection="column">
                 <text fg={theme.textMuted}>
@@ -138,18 +166,18 @@ export function HivemindSections() {
             <b>board</b>
           </text>
           <text fg={theme.textMuted}>
-            <span>open: {hive.state.board.open}</span>
-            <Show when={hive.state.board.highPrioMine > 0}>
-              <span style={{ fg: theme.error }}> ({hive.state.board.highPrioMine} high-prio)</span>
+            <span>open: {board().open}</span>
+            <Show when={board().highPrioMine > 0}>
+              <span style={{ fg: theme.error }}> ({board().highPrioMine} high-prio)</span>
             </Show>
           </text>
           <text fg={theme.textMuted}>
-            <span>claimed: {hive.state.board.claimed}</span>
-            <Show when={hive.state.board.mineClaimedCount > 0}>
-              <span style={{ fg: theme.success }}> ({hive.state.board.mineClaimedCount} by you)</span>
+            <span>claimed: {board().claimed}</span>
+            <Show when={board().mineClaimedCount > 0}>
+              <span style={{ fg: theme.success }}> ({board().mineClaimedCount} by you)</span>
             </Show>
-            <Show when={hive.state.board.stale > 0}>
-              <span style={{ fg: theme.warning }}> · {hive.state.board.stale} stale</span>
+            <Show when={board().stale > 0}>
+              <span style={{ fg: theme.warning }}> · {board().stale} stale</span>
             </Show>
           </text>
         </box>

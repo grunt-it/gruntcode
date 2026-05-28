@@ -145,6 +145,19 @@ export const { use: useHivemind, provider: HivemindProvider } = createSimpleCont
       }
     }
 
+    // Defensive shape guards (#276): an API response we don't trust to be well-shaped
+    // can't poison the store. Coerce non-arrays to []; coerce non-objects-with-id (peers)
+    // or non-objects-with-from_peer (messages) to "discarded" by filtering them out.
+    // The setState calls that follow can then rely on a clean array shape — which is what
+    // SolidJS <For> requires to avoid the "U.length on undefined" crash from #276.
+    const ensureArray = <T,>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : [])
+    const validPeer = (p: unknown): p is Peer =>
+      typeof p === "object" && p !== null && typeof (p as Peer).id === "string"
+    const validMessage = (m: unknown): m is Message =>
+      typeof m === "object" && m !== null && typeof (m as Message).from_peer === "string"
+    const validTask = (t: unknown): t is Task =>
+      typeof t === "object" && t !== null && typeof (t as Task).status === "string"
+
     async function poll() {
       // peers — /api/peers returns { peers: [...] }
       const peersWrap = await fetchJson<{ peers: Peer[] }>("/api/peers")
@@ -156,7 +169,7 @@ export const { use: useHivemind, provider: HivemindProvider } = createSimpleCont
       setState("apiOnline", true)
       setState("lastFetchAt", Date.now())
 
-      const peers = peersWrap.peers ?? []
+      const peers = ensureArray<Peer>(peersWrap.peers).filter(validPeer)
       const self = peerId ? peers.find((p) => p.id === peerId) ?? null : null
       setState("self", self)
       setState(
@@ -177,11 +190,14 @@ export const { use: useHivemind, provider: HivemindProvider } = createSimpleCont
           fetchJson<{ tasks: Task[] }>("/api/tasks"),
         ])
         if (inboxWrap) {
-          const unread = (inboxWrap.messages ?? []).filter((m) => !m.read_at).slice(0, 10)
+          const unread = ensureArray<Message>(inboxWrap.messages)
+            .filter(validMessage)
+            .filter((m) => !m.read_at)
+            .slice(0, 10)
           setState("inbox", unread)
         }
         if (tasksWrap) {
-          const tasks = tasksWrap.tasks ?? []
+          const tasks = ensureArray<Task>(tasksWrap.tasks).filter(validTask)
           const open = tasks.filter((t) => t.status === "open")
           const claimed = tasks.filter((t) => t.status === "claimed")
           const stale = tasks.filter((t) => t.stale).length
