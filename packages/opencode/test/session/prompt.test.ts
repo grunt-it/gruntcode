@@ -55,6 +55,7 @@ import { reply, TestLLMServer } from "../lib/llm-server"
 import { SyncEvent } from "@/sync"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { Feedback } from "@/session/feedback"
 
 void Log.init({ print: false })
 
@@ -207,6 +208,7 @@ function makePrompt(input?: { processor?: "blocking" }) {
       : SessionProcessor.layer.pipe(
           Layer.provide(summary),
           Layer.provide(Image.defaultLayer),
+          Layer.provide(Feedback.defaultLayer),
           Layer.provide(RuntimeFlags.layer({ experimentalEventSystem: true })),
           Layer.provideMerge(deps),
         )
@@ -219,6 +221,7 @@ function makePrompt(input?: { processor?: "blocking" }) {
     Layer.provide(SessionRevert.defaultLayer),
     Layer.provide(Image.defaultLayer),
     Layer.provide(Reference.defaultLayer),
+    Layer.provide(Feedback.defaultLayer),
     Layer.provide(summary),
     Layer.provideMerge(run),
     Layer.provideMerge(compact),

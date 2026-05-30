@@ -275,6 +275,7 @@ export const ToolStateCompleted = Schema.Struct({
     compacted: Schema.optional(NonNegativeInt),
   }),
   attachments: Schema.optional(Schema.Array(FilePart)),
+  strippedOutput: Schema.optional(Schema.Any),
 }).annotate({ identifier: "ToolStateCompleted" })
 export type ToolStateCompleted = Types.DeepMutable<Schema.Schema.Type<typeof ToolStateCompleted>>
 

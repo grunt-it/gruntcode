@@ -20,6 +20,7 @@ import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionEvent } from "@opencode-ai/core/session-event"
+import * as StripSchema from "./compaction-strip-schema"
 
 const log = Log.create({ service: "session.compaction" })
 
@@ -34,7 +35,7 @@ export const Event = {
 
 export const PRUNE_MINIMUM = 20_000
 export const PRUNE_PROTECT = 40_000
-const TOOL_OUTPUT_MAX_CHARS = 2_000
+const TOOL_OUTPUT_MAX_CHARS = 4_000
 const PRUNE_PROTECTED_TOOLS = ["skill"]
 const DEFAULT_TAIL_TURNS = 2
 const MIN_PRESERVE_RECENT_TOKENS = 2_000
@@ -209,6 +210,70 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Se
 
 export const use = serviceUse(Service)
 
+/**
+ * Build strip metadata for a tool part based on its tool type.
+ * Preserves audit trail without the full output bloat.
+ * Exported for testing.
+ */
+export function buildStripMetadata(part: MessageV2.ToolPart) {
+  const output = part.state.status === "completed" ? part.state.output : ""
+  const outputTokens = Token.estimate(output)
+  const lines = output.split("\n")
+
+  switch (part.tool) {
+    case "knowledge-base_get_knowledge": {
+      const kb = (part.state.input as any).kb ?? ""
+      const file = (part.state.input as any).file ?? ""
+      const kbVersion = (part.state.metadata as any)?.kb_version ?? null
+      const summary = output.slice(0, 200)
+      return { kb, file, kb_version: kbVersion, output_tokens: outputTokens, summary }
+    }
+    case "bash": {
+      const command = (part.state.input as any).command ?? ""
+      const exitCode = (part.state.metadata as any)?.exit_code ?? 0
+      const headLines = lines.slice(0, 5)
+      const tailLines = lines.slice(-5)
+      return {
+        command,
+        exit_code: exitCode,
+        output_tokens: outputTokens,
+        head_lines: headLines,
+        tail_lines: tailLines,
+      }
+    }
+    case "read": {
+      const path = (part.state.input as any).path ?? ""
+      const firstLine = lines[0] ?? null
+      return {
+        path,
+        lines_read: lines.length,
+        output_tokens: outputTokens,
+        first_line: firstLine,
+      }
+    }
+    case "webfetch": {
+      const url = (part.state.input as any).url ?? ""
+      const status = (part.state.metadata as any)?.status ?? 200
+      const title = lines[0]?.slice(0, 100) ?? null
+      return { url, status, output_tokens: outputTokens, title }
+    }
+    case "grep": {
+      const pattern = (part.state.input as any).pattern ?? ""
+      const include = (part.state.input as any).include ?? null
+      const files = output.split("\n").filter((line) => line.trim())
+      return {
+        pattern,
+        include,
+        match_count: files.length,
+        files_matched: files.slice(0, 20),
+      }
+    }
+    default:
+      // For tools without specific schema, store minimal metadata
+      return { tool: part.tool, output_tokens: outputTokens, first_100_chars: output.slice(0, 100) }
+  }
+}
+
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -333,6 +398,14 @@ export const layer = Layer.effect(
       if (pruned > PRUNE_MINIMUM) {
         for (const part of toPrune) {
           if (part.state.status === "completed") {
+            // Build and store strip metadata before clearing output
+            try {
+              const metadata = buildStripMetadata(part)
+              part.state.strippedOutput = metadata
+            } catch {
+              // Fallback to minimal metadata if buildStripMetadata fails
+              part.state.strippedOutput = { tool: part.tool, output_tokens: Token.estimate(part.state.output) }
+            }
             part.state.time.compacted = Date.now()
             yield* session.updatePart(part)
           }
@@ -445,7 +518,7 @@ export const layer = Layer.effect(
         agent,
         sessionID: input.sessionID,
         tools: {},
-        system: [],
+        system: agent.prompt ? [agent.prompt] : [],
         messages: [
           ...modelMessages,
           {
