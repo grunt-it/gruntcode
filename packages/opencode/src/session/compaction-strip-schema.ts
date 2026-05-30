@@ -9,7 +9,7 @@ export const KbReadMetadata = Schema.Struct({
   file: Schema.String,
   kb_version: Schema.NullOr(Schema.String),
   output_tokens: Schema.Number,
-  summary: Schema.String.pipe(Schema.maxLength(200)),
+  summary: Schema.String.check(Schema.isMaxLength(200)),
 })
 
 /**
@@ -20,8 +20,8 @@ export const BashMetadata = Schema.Struct({
   command: Schema.String,
   exit_code: Schema.Number,
   output_tokens: Schema.Number,
-  head_lines: Schema.Array(Schema.String).pipe(Schema.maxItems(5)),
-  tail_lines: Schema.Array(Schema.String).pipe(Schema.maxItems(5)),
+  head_lines: Schema.Array(Schema.String).check(Schema.isMaxLength(5)),
+  tail_lines: Schema.Array(Schema.String).check(Schema.isMaxLength(5)),
 })
 
 /**
@@ -61,12 +61,12 @@ export const GrepMetadata = Schema.Struct({
  * Union of all strip metadata types.
  * Used to type the strippedOutput field on tool parts.
  */
-export const StripMetadata = Schema.Union(
+export const StripMetadata = Schema.Union([
   KbReadMetadata,
   BashMetadata,
   ReadMetadata,
   WebfetchMetadata,
   GrepMetadata,
-)
+])
 
 export type StripMetadata = Schema.Schema.Type<typeof StripMetadata>

@@ -21,6 +21,8 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionEvent } from "@opencode-ai/core/session-event"
 import * as StripSchema from "./compaction-strip-schema"
+import * as CompactionArchive from "./compaction-archive"
+import { AppFileSystem } from "@opencode-ai/core/filesystem"
 
 const log = Log.create({ service: "session.compaction" })
 
@@ -35,7 +37,7 @@ export const Event = {
 
 export const PRUNE_MINIMUM = 20_000
 export const PRUNE_PROTECT = 40_000
-const TOOL_OUTPUT_MAX_CHARS = 4_000
+const TOOL_OUTPUT_MAX_CHARS = 2_000
 const PRUNE_PROTECTED_TOOLS = ["skill"]
 const DEFAULT_TAIL_TURNS = 2
 const MIN_PRESERVE_RECENT_TOKENS = 2_000
@@ -189,7 +191,7 @@ export interface Interface {
     tokens: MessageV2.Assistant["tokens"]
     model: Provider.Model
   }) => Effect.Effect<boolean>
-  readonly prune: (input: { sessionID: SessionID }) => Effect.Effect<void>
+  readonly prune: (input: { sessionID: SessionID; stripBeforeId?: MessageID }) => Effect.Effect<void>
   readonly process: (input: {
     parentID: MessageID
     messages: MessageV2.WithParts[]
@@ -210,27 +212,26 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Se
 
 export const use = serviceUse(Service)
 
-/**
- * Build strip metadata for a tool part based on its tool type.
- * Preserves audit trail without the full output bloat.
- * Exported for testing.
- */
 export function buildStripMetadata(part: MessageV2.ToolPart) {
   const output = part.state.status === "completed" ? part.state.output : ""
   const outputTokens = Token.estimate(output)
   const lines = output.split("\n")
+  // The tool-state union narrows awkwardly across pending/running/completed; we only ever read
+  // input/metadata which exist on the variants that reach here, so read them off an any-view.
+  const input = (part.state as any).input ?? {}
+  const metadata = (part.state as any).metadata ?? {}
 
   switch (part.tool) {
     case "knowledge-base_get_knowledge": {
-      const kb = (part.state.input as any).kb ?? ""
-      const file = (part.state.input as any).file ?? ""
-      const kbVersion = (part.state.metadata as any)?.kb_version ?? null
+      const kb = input.kb ?? ""
+      const file = input.file ?? ""
+      const kbVersion = metadata?.kb_version ?? null
       const summary = output.slice(0, 200)
       return { kb, file, kb_version: kbVersion, output_tokens: outputTokens, summary }
     }
     case "bash": {
-      const command = (part.state.input as any).command ?? ""
-      const exitCode = (part.state.metadata as any)?.exit_code ?? 0
+      const command = input.command ?? ""
+      const exitCode = metadata?.exit_code ?? 0
       const headLines = lines.slice(0, 5)
       const tailLines = lines.slice(-5)
       return {
@@ -242,7 +243,7 @@ export function buildStripMetadata(part: MessageV2.ToolPart) {
       }
     }
     case "read": {
-      const path = (part.state.input as any).path ?? ""
+      const path = input.path ?? ""
       const firstLine = lines[0] ?? null
       return {
         path,
@@ -252,14 +253,14 @@ export function buildStripMetadata(part: MessageV2.ToolPart) {
       }
     }
     case "webfetch": {
-      const url = (part.state.input as any).url ?? ""
-      const status = (part.state.metadata as any)?.status ?? 200
+      const url = input.url ?? ""
+      const status = metadata?.status ?? 200
       const title = lines[0]?.slice(0, 100) ?? null
       return { url, status, output_tokens: outputTokens, title }
     }
     case "grep": {
-      const pattern = (part.state.input as any).pattern ?? ""
-      const include = (part.state.input as any).include ?? null
+      const pattern = input.pattern ?? ""
+      const include = input.include ?? null
       const files = output.split("\n").filter((line) => line.trim())
       return {
         pattern,
@@ -286,6 +287,7 @@ export const layer = Layer.effect(
     const provider = yield* Provider.Service
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
+    const fs = yield* AppFileSystem.Service
 
     const isOverflow = Effect.fn("SessionCompaction.isOverflow")(function* (input: {
       tokens: MessageV2.Assistant["tokens"]
@@ -358,11 +360,57 @@ export const layer = Layer.effect(
       }
     })
 
+    const selectCompactionModel = Effect.fn("SessionCompaction.selectCompactionModel")(function* (input: {
+      cfg: Config.Info
+      sessionModel: Provider.Model
+      agent: Agent.Info
+    }) {
+      // 1. Explicit agent override (highest priority, preserves existing behavior)
+      if (input.agent.model) {
+        return yield* provider.getModel(input.agent.model.providerID, input.agent.model.modelID).pipe(Effect.orDie)
+      }
+      // 2. Explicit compaction.model in config
+      if (input.cfg.compaction?.model) {
+        const [providerID, modelID] = input.cfg.compaction.model.split("/")
+        if (providerID && modelID) {
+          return yield* provider
+            .getModel(providerID as ProviderID, modelID as ModelID)
+            .pipe(Effect.catchCause(() => Effect.succeed(input.sessionModel)))
+        }
+      }
+      // 3. Glob-pattern model overrides keyed on session model
+      if (input.cfg.compaction?.model_overrides) {
+        const sessionModelKey = `${input.sessionModel.providerID}/${input.sessionModel.id}`
+        for (const [pattern, overrideModel] of Object.entries(input.cfg.compaction.model_overrides)) {
+          const regex = new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`)
+          if (regex.test(sessionModelKey)) {
+            const [providerID, modelID] = overrideModel.split("/")
+            if (providerID && modelID) {
+              return yield* provider
+                .getModel(providerID as ProviderID, modelID as ModelID)
+                .pipe(Effect.catchCause(() => Effect.succeed(input.sessionModel)))
+            }
+          }
+        }
+      }
+      // 4. Default tiering: non-anthropic session models compact via Sonnet.
+      // Fall back to the session model if Sonnet is unavailable (catches typed
+      // ModelNotFoundError AND provider defects so compaction never hard-fails).
+      if (input.sessionModel.providerID !== "anthropic") {
+        return yield* provider
+          .getModel("anthropic" as ProviderID, "claude-sonnet-4-6" as ModelID)
+          .pipe(Effect.catchCause(() => Effect.succeed(input.sessionModel)))
+      }
+      // 5. Anthropic session models compact themselves
+      return input.sessionModel
+    })
+
     // goes backwards through parts until there are PRUNE_PROTECT tokens worth of tool
     // calls, then erases output of older tool calls to free context space
-    const prune = Effect.fn("SessionCompaction.prune")(function* (input: { sessionID: SessionID }) {
+    // When stripBeforeId is provided, strips all tool outputs before that message ID
+    const prune = Effect.fn("SessionCompaction.prune")(function* (input: { sessionID: SessionID; stripBeforeId?: MessageID }) {
       const cfg = yield* config.get()
-      if (!cfg.compaction?.prune) return
+      if (cfg.compaction?.prune === false) return
       log.info("pruning")
 
       const msgs = yield* session
@@ -375,38 +423,66 @@ export const layer = Layer.effect(
       const toPrune: MessageV2.ToolPart[] = []
       let turns = 0
 
-      loop: for (let msgIndex = msgs.length - 1; msgIndex >= 0; msgIndex--) {
-        const msg = msgs[msgIndex]
-        if (msg.info.role === "user") turns++
-        if (turns < 2) continue
-        if (msg.info.role === "assistant" && msg.info.summary) break loop
-        for (let partIndex = msg.parts.length - 1; partIndex >= 0; partIndex--) {
-          const part = msg.parts[partIndex]
-          if (part.type !== "tool") continue
-          if (part.state.status !== "completed") continue
-          if (PRUNE_PROTECTED_TOOLS.includes(part.tool)) continue
-          if (part.state.time.compacted) break loop
-          const estimate = Token.estimate(part.state.output)
-          total += estimate
-          if (total <= PRUNE_PROTECT) continue
-          pruned += estimate
-          toPrune.push(part)
+      // When stripBeforeId is provided, we're stripping the just-summarized head (post-compaction)
+      // rather than doing turn-end protect-window pruning. In strip mode we walk forward and strip
+      // every completed tool output BEFORE the tail boundary, leaving the preserved tail untouched.
+      const stripMode = input.stripBeforeId !== undefined
+
+      if (stripMode) {
+        for (const msg of msgs) {
+          // Stop as soon as we reach the preserved tail — everything from here on stays verbatim.
+          if (msg.info.id === input.stripBeforeId) break
+          for (const part of msg.parts) {
+            if (part.type !== "tool") continue
+            if (part.state.status !== "completed") continue
+            if (PRUNE_PROTECTED_TOOLS.includes(part.tool)) continue
+            if (part.state.time.compacted) continue
+            pruned += Token.estimate(part.state.output)
+            toPrune.push(part)
+          }
+        }
+      } else {
+        loop: for (let msgIndex = msgs.length - 1; msgIndex >= 0; msgIndex--) {
+          const msg = msgs[msgIndex]
+          if (msg.info.role === "user") turns++
+          if (turns < 2) continue
+          if (msg.info.role === "assistant" && msg.info.summary) break loop
+          for (let partIndex = msg.parts.length - 1; partIndex >= 0; partIndex--) {
+            const part = msg.parts[partIndex]
+            if (part.type !== "tool") continue
+            if (part.state.status !== "completed") continue
+            if (PRUNE_PROTECTED_TOOLS.includes(part.tool)) continue
+            if (part.state.time.compacted) break loop
+            const estimate = Token.estimate(part.state.output)
+            total += estimate
+            if (total <= PRUNE_PROTECT) continue
+            pruned += estimate
+            toPrune.push(part)
+          }
         }
       }
 
-      log.info("found", { pruned, total })
-      if (pruned > PRUNE_MINIMUM) {
+      log.info("found", { pruned, total, stripMode })
+      if (pruned > PRUNE_MINIMUM || stripMode) {
         for (const part of toPrune) {
           if (part.state.status === "completed") {
-            // Build and store strip metadata before clearing output
+            // Archive the full verbatim output to disk so a future retrieval MCP can read it
+            // back byte-for-byte, then store structured per-tool metadata + the archive path in
+            // strippedOutput. The live output is replaced with a compact marker to free context.
+            // The archive file (compaction-archive/<sessionID>/<partID>) is the source of truth.
+            const fullOutput = part.state.output
+            let metadata: unknown
             try {
-              const metadata = buildStripMetadata(part)
-              part.state.strippedOutput = metadata
+              metadata = buildStripMetadata(part)
             } catch {
-              // Fallback to minimal metadata if buildStripMetadata fails
-              part.state.strippedOutput = { tool: part.tool, output_tokens: Token.estimate(part.state.output) }
+              metadata = { tool: part.tool, output_tokens: Token.estimate(fullOutput) }
             }
+            const outputPath = yield* CompactionArchive.write(fs, input.sessionID, part.id, fullOutput).pipe(
+              Effect.catchCause(() => Effect.succeed(undefined)),
+            )
             part.state.time.compacted = Date.now()
+            part.state.strippedOutput = { metadata, outputPath }
+            part.state.output = "[output stripped for compaction — full content preserved]"
             yield* session.updatePart(part)
           }
         }
@@ -454,10 +530,12 @@ export const layer = Layer.effect(
       }
 
       const agent = yield* agents.get("compaction")
-      const model = agent.model
-        ? yield* provider.getModel(agent.model.providerID, agent.model.modelID).pipe(Effect.orDie)
-        : yield* provider.getModel(userMessage.model.providerID, userMessage.model.modelID).pipe(Effect.orDie)
       const cfg = yield* config.get()
+      const model = yield* selectCompactionModel({
+        cfg,
+        sessionModel: yield* provider.getModel(userMessage.model.providerID, userMessage.model.modelID).pipe(Effect.orDie),
+        agent,
+      })
       const history = compactionPart && messages.at(-1)?.info.id === input.parentID ? messages.slice(0, -1) : messages
       const prior = completedCompactions(history)
       const hidden = new Set(prior.flatMap((item) => [item.userIndex, item.assistantIndex]))
@@ -518,7 +596,7 @@ export const layer = Layer.effect(
         agent,
         sessionID: input.sessionID,
         tools: {},
-        system: agent.prompt ? [agent.prompt] : [],
+        system: [],
         messages: [
           ...modelMessages,
           {
@@ -650,6 +728,9 @@ export const layer = Layer.effect(
           })
         }
         yield* bus.publish(Event.Compacted, { sessionID: input.sessionID })
+        // Strip the just-summarized head. Boundary is the preserved tail when one was
+        // retained, otherwise the summary message itself (whole head was summarized).
+        yield* prune({ sessionID: input.sessionID, stripBeforeId: selected.tail_start_id ?? msg.id })
       }
       return result
     })
@@ -706,6 +787,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Config.defaultLayer),
     Layer.provide(RuntimeFlags.defaultLayer),
     Layer.provide(EventV2Bridge.defaultLayer),
+    Layer.provide(AppFileSystem.defaultLayer),
   ),
 )
 
