@@ -8,6 +8,7 @@ import { Image } from "@/image/image"
 import { Agent } from "../../src/agent/agent"
 import { LLM } from "../../src/session/llm"
 import { SessionCompaction } from "../../src/session/compaction"
+import { CompactionArchive } from "../../src/session/compaction-archive"
 import { Token } from "@/util/token"
 import * as Log from "@opencode-ai/core/util/log"
 import { Permission } from "../../src/permission"
@@ -26,6 +27,7 @@ import { Snapshot } from "../../src/snapshot"
 import { ProviderTest } from "../fake/provider"
 import { testEffect } from "../lib/effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import { AppFileSystem } from "@opencode-ai/core/filesystem"
 import { TestConfig } from "../fixture/config"
 import { SyncEvent } from "@/sync"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -236,6 +238,7 @@ const deps = Layer.mergeAll(
   RuntimeFlags.layer({ experimentalEventSystem: true }),
   EventV2Bridge.defaultLayer,
   Feedback.defaultLayer,
+  AppFileSystem.defaultLayer,
 )
 
 const env = Layer.mergeAll(
@@ -287,6 +290,7 @@ function compactionProcessLayer(options?: CompactionProcessOptions) {
     Layer.provide(RuntimeFlags.layer({ experimentalEventSystem: true })),
     Layer.provide(EventV2Bridge.defaultLayer),
     Layer.provide(Feedback.defaultLayer),
+    Layer.provide(AppFileSystem.defaultLayer),
   )
 }
 
@@ -1788,4 +1792,239 @@ describe("SessionNs.getUsage", () => {
     expect(result.tokens.cache.read).toBe(200)
     expect(result.tokens.cache.write).toBe(300)
   })
+})
+
+describe("session.compaction.prune with stripBeforeId", () => {
+  it.live(
+    "strips all tool outputs before stripBeforeId in strip mode",
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          const compact = yield* SessionCompaction.Service
+          const ssn = yield* SessionNs.Service
+          const info = yield* ssn.create({})
+
+          const user1 = yield* ssn.updateMessage({
+            id: MessageID.ascending(),
+            role: "user",
+            sessionID: info.id,
+            agent: "build",
+            model: ref,
+            time: { created: Date.now() },
+          })
+          yield* ssn.updatePart({
+            id: PartID.ascending(),
+            messageID: user1.id,
+            sessionID: info.id,
+            type: "text",
+            text: "first",
+          })
+
+          const assistant1: MessageV2.Assistant = {
+            id: MessageID.ascending(),
+            role: "assistant",
+            sessionID: info.id,
+            mode: "build",
+            agent: "build",
+            path: { cwd: dir, root: dir },
+            cost: 0,
+            tokens: { output: 0, input: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+            modelID: ref.modelID,
+            providerID: ref.providerID,
+            parentID: user1.id,
+            time: { created: Date.now() },
+            finish: "end_turn",
+          }
+          yield* ssn.updateMessage(assistant1)
+          const oldPartId = PartID.ascending()
+          yield* ssn.updatePart({
+            id: oldPartId,
+            messageID: assistant1.id,
+            sessionID: info.id,
+            type: "tool",
+            callID: crypto.randomUUID(),
+            tool: "bash",
+            state: {
+              status: "completed",
+              input: { command: "echo old" },
+              output: "x".repeat(50_000),
+              title: "old tool",
+              metadata: {},
+              time: { start: Date.now(), end: Date.now() },
+            },
+          })
+
+          const user2 = yield* ssn.updateMessage({
+            id: MessageID.ascending(),
+            role: "user",
+            sessionID: info.id,
+            agent: "build",
+            model: ref,
+            time: { created: Date.now() },
+          })
+          yield* ssn.updatePart({
+            id: PartID.ascending(),
+            messageID: user2.id,
+            sessionID: info.id,
+            type: "text",
+            text: "second",
+          })
+
+          const assistant2: MessageV2.Assistant = {
+            id: MessageID.ascending(),
+            role: "assistant",
+            sessionID: info.id,
+            mode: "build",
+            agent: "build",
+            path: { cwd: dir, root: dir },
+            cost: 0,
+            tokens: { output: 0, input: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+            modelID: ref.modelID,
+            providerID: ref.providerID,
+            parentID: user2.id,
+            time: { created: Date.now() },
+            finish: "end_turn",
+          }
+          yield* ssn.updateMessage(assistant2)
+          yield* ssn.updatePart({
+            id: PartID.ascending(),
+            messageID: assistant2.id,
+            sessionID: info.id,
+            type: "tool",
+            callID: crypto.randomUUID(),
+            tool: "bash",
+            state: {
+              status: "completed",
+              input: { command: "echo recent" },
+              output: "y".repeat(50_000),
+              title: "recent tool",
+              metadata: {},
+              time: { start: Date.now(), end: Date.now() },
+            },
+          })
+
+          yield* compact.prune({ sessionID: info.id, stripBeforeId: user2.id })
+
+          const msgs = yield* ssn.messages({ sessionID: info.id })
+          const parts = msgs.flatMap((msg) => msg.parts).filter((p) => p.type === "tool")
+          expect(parts).toHaveLength(2)
+
+          const oldPart = parts.find((p) => p.state.status === "completed" && p.state.title === "old tool")
+          const recentPart = parts.find((p) => p.state.status === "completed" && p.state.title === "recent tool")
+
+          expect(oldPart?.type).toBe("tool")
+          if (oldPart?.type === "tool" && oldPart.state.status === "completed") {
+            expect(oldPart.state.time.compacted).toBeNumber()
+            // Live output is replaced with a compact marker to free context.
+            expect(oldPart.state.output).toContain("stripped for compaction")
+            // strippedOutput now carries structured metadata + an archive path.
+            const stripped = oldPart.state.strippedOutput as { metadata: any; outputPath: string }
+            expect(stripped).toBeDefined()
+            expect(stripped.outputPath).toBeString()
+            // Per-tool metadata is preserved (bash → command + head/tail).
+            expect(stripped.metadata.command).toBe("echo old")
+            expect(stripped.metadata.output_tokens).toBeGreaterThan(0)
+            // Losslessness: the full original is recoverable byte-for-byte from the archive file.
+            expect(stripped.outputPath).toBe(CompactionArchive.filePath(info.id, oldPart.id))
+            const archived = yield* Effect.promise(() => Bun.file(stripped.outputPath).text())
+            expect(archived).toBe("x".repeat(50_000))
+          }
+
+          expect(recentPart?.type).toBe("tool")
+          if (recentPart?.type === "tool" && recentPart.state.status === "completed") {
+            expect(recentPart.state.time.compacted).toBeUndefined()
+            expect(recentPart.state.strippedOutput).toBeUndefined()
+          }
+        }),
+      { config: { compaction: { prune: true } } },
+    ),
+  )
+
+  it.live(
+    "respects protected tools in strip mode",
+    provideTmpdirInstance(
+      (dir) =>
+        Effect.gen(function* () {
+          const compact = yield* SessionCompaction.Service
+          const ssn = yield* SessionNs.Service
+          const info = yield* ssn.create({})
+
+          const user1 = yield* ssn.updateMessage({
+            id: MessageID.ascending(),
+            role: "user",
+            sessionID: info.id,
+            agent: "build",
+            model: ref,
+            time: { created: Date.now() },
+          })
+          yield* ssn.updatePart({
+            id: PartID.ascending(),
+            messageID: user1.id,
+            sessionID: info.id,
+            type: "text",
+            text: "first",
+          })
+
+          const assistant1: MessageV2.Assistant = {
+            id: MessageID.ascending(),
+            role: "assistant",
+            sessionID: info.id,
+            mode: "build",
+            agent: "build",
+            path: { cwd: dir, root: dir },
+            cost: 0,
+            tokens: { output: 0, input: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+            modelID: ref.modelID,
+            providerID: ref.providerID,
+            parentID: user1.id,
+            time: { created: Date.now() },
+            finish: "end_turn",
+          }
+          yield* ssn.updateMessage(assistant1)
+          yield* ssn.updatePart({
+            id: PartID.ascending(),
+            messageID: assistant1.id,
+            sessionID: info.id,
+            type: "tool",
+            callID: crypto.randomUUID(),
+            tool: "skill",
+            state: {
+              status: "completed",
+              input: {},
+              output: "x".repeat(50_000),
+              title: "skill output",
+              metadata: {},
+              time: { start: Date.now(), end: Date.now() },
+            },
+          })
+
+          const user2 = yield* ssn.updateMessage({
+            id: MessageID.ascending(),
+            role: "user",
+            sessionID: info.id,
+            agent: "build",
+            model: ref,
+            time: { created: Date.now() },
+          })
+          yield* ssn.updatePart({
+            id: PartID.ascending(),
+            messageID: user2.id,
+            sessionID: info.id,
+            type: "text",
+            text: "second",
+          })
+
+          yield* compact.prune({ sessionID: info.id, stripBeforeId: user2.id })
+
+          const msgs = yield* ssn.messages({ sessionID: info.id })
+          const part = msgs.flatMap((msg) => msg.parts).find((p) => p.type === "tool")
+          expect(part?.type).toBe("tool")
+          if (part?.type === "tool" && part.state.status === "completed") {
+            expect(part.state.time.compacted).toBeUndefined()
+            expect(part.state.strippedOutput).toBeUndefined()
+          }
+        }),
+      { config: { compaction: { prune: true } } },
+    ),
+  )
 })
