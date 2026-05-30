@@ -28,10 +28,12 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import * as DateTime from "effect/DateTime"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { MCP } from "@/mcp"
+import { Feedback } from "./feedback"
 import { HivemindLoopHook } from "./hivemind-loop-hook"
 import { Usage, type LLMEvent } from "@opencode-ai/llm"
 
 const DOOM_LOOP_THRESHOLD = 3
+const CROSS_TURN_DOOM_LOOP_THRESHOLD = 3
 const log = Log.create({ service: "session.processor" })
 
 export type Result = "compact" | "stop" | "continue"
@@ -97,6 +99,7 @@ export const layer = Layer.effect(
     const llm = yield* LLM.Service
     const permission = yield* Permission.Service
     const plugin = yield* Plugin.Service
+    const feedback = yield* Feedback.Service
     const summary = yield* SessionSummary.Service
     const scope = yield* Scope.Scope
     const status = yield* SessionStatus.Service
@@ -442,6 +445,66 @@ export const layer = Layer.effect(
                   JSON.stringify(part.state.input) === JSON.stringify(input),
               )
             ) {
+              // Cross-turn doom loop: same tool+input repeated across consecutive turns
+              const recentMsgs = yield* session
+                .messages({
+                  sessionID: ctx.sessionID,
+                  limit: CROSS_TURN_DOOM_LOOP_THRESHOLD * 5,
+                })
+                .pipe(Effect.catch(() => Effect.succeed([] as MessageV2.WithParts[])))
+
+              let consecutiveCount = 1 // current turn counts as 1
+              for (let i = recentMsgs.length - 1; i >= 0; i--) {
+                const msg = recentMsgs[i]
+                if (msg.info.role !== "assistant") continue
+                if (msg.info.id === ctx.assistantMessage.id) continue // skip current
+
+                // Skip assistant messages with no tool parts (e.g., summary messages)
+                const hasAnyTool = msg.parts.some((p: MessageV2.Part) => p.type === "tool")
+                if (!hasAnyTool) continue
+
+                const hasMatchingTool = msg.parts.some(
+                  (p: MessageV2.Part) =>
+                    p.type === "tool" &&
+                    p.state.status !== "pending" &&
+                    p.tool === value.name &&
+                    JSON.stringify(p.state.input) === JSON.stringify(input),
+                )
+
+                if (hasMatchingTool) {
+                  consecutiveCount++
+                } else {
+                  break // streak broken — different tool or args
+                }
+
+                if (consecutiveCount >= CROSS_TURN_DOOM_LOOP_THRESHOLD) {
+                  yield* feedback.record({
+                    sessionID: ctx.sessionID,
+                    type: "repeated-tool",
+                    tool: value.name,
+                    input,
+                    turns: consecutiveCount,
+                    timestamp: Date.now(),
+                  })
+                  yield* HivemindLoopHook.enhanceViolation({
+                    enabled: flags.hivemindLoopEnabled,
+                    mcp: mcpOption,
+                    scope,
+                    tool: value.name,
+                    turns: consecutiveCount,
+                  })
+                  const agent = yield* agents.get(ctx.assistantMessage.agent)
+                  yield* permission.ask({
+                    permission: "doom_loop",
+                    patterns: [value.name],
+                    sessionID: ctx.assistantMessage.sessionID,
+                    metadata: { tool: value.name, input, crossTurn: true },
+                    always: [value.name],
+                    ruleset: agent.permission,
+                  })
+                  return
+                }
+              }
               return
             }
 
@@ -906,6 +969,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Config.defaultLayer),
     Layer.provide(RuntimeFlags.defaultLayer),
     Layer.provide(EventV2Bridge.defaultLayer),
+    Layer.provide(Feedback.defaultLayer),
   ),
 )
 

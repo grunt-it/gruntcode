@@ -162,4 +162,67 @@ export const loopProgress = Effect.fn("HivemindLoopHook.loopProgress")(function*
   )
 })
 
+/**
+ * Fire hivemind_enhance when cross-turn doom loop is detected. Surfaces the violation
+ * to the coordinator so they can see the worker is stuck. Same fire-and-forget guarantee.
+ */
+export const enhanceViolation = Effect.fn("HivemindLoopHook.enhanceViolation")(function* (input: {
+  enabled: boolean
+  mcp: Option.Option<MCPShape>
+  scope: Scope.Scope
+  tool: string
+  turns: number
+}) {
+  if (!input.enabled) return
+  if (Option.isNone(input.mcp)) return
+  const client = yield* findHivemindClient(input.mcp.value, "hivemind_enhance")
+  if (!client) return
+  yield* Effect.promise(() =>
+    client.callTool({
+      name: "hivemind_enhance",
+      arguments: {
+        note: `🔄 DOOM LOOP: \`${input.tool}\` called ${input.turns} consecutive turns with identical args. User prompted for continuation.`,
+      },
+    }),
+  ).pipe(
+    Effect.tapError((err) =>
+      Effect.sync(() => log.debug("enhanceViolation MCP call failed (non-fatal)", { err })),
+    ),
+    Effect.ignore,
+    Effect.forkIn(input.scope),
+  )
+})
+
+/**
+ * Fire hivemind_loop_blocker when the user rejects a doom loop continuation. Signals
+ * to the coordinator that the worker is blocked and needs intervention.
+ */
+export const loopBlocker = Effect.fn("HivemindLoopHook.loopBlocker")(function* (input: {
+  enabled: boolean
+  mcp: Option.Option<MCPShape>
+  scope: Scope.Scope
+  tool: string
+  turns: number
+}) {
+  if (!input.enabled) return
+  if (Option.isNone(input.mcp)) return
+  const client = yield* findHivemindClient(input.mcp.value, "hivemind_loop_blocker")
+  if (!client) return
+  yield* Effect.promise(() =>
+    client.callTool({
+      name: "hivemind_loop_blocker",
+      arguments: {
+        blocker: `Tool \`${input.tool}\` rejected after ${input.turns} identical calls. Model must use existing result or produce text answer.`,
+        cost_of_waiting: "Worker cannot proceed until it uses the result it already has.",
+      },
+    }),
+  ).pipe(
+    Effect.tapError((err) =>
+      Effect.sync(() => log.debug("loopBlocker MCP call failed (non-fatal)", { err })),
+    ),
+    Effect.ignore,
+    Effect.forkIn(input.scope),
+  )
+})
+
 export * as HivemindLoopHook from "./hivemind-loop-hook"
