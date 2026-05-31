@@ -56,7 +56,7 @@ import { useEditorContext } from "@tui/context/editor"
 import { useDialog } from "../../ui/dialog"
 import { DialogAlert } from "../../ui/dialog-alert"
 import { TodoItem } from "../../component/todo-item"
-import { TicketRef } from "../../component/ticket-ref"
+
 import { DialogMessage } from "./dialog-message"
 import type { PromptInfo } from "../../component/prompt/history"
 import { DialogConfirm } from "@tui/ui/dialog-confirm"
@@ -1656,81 +1656,31 @@ function ReasoningHeader(props: {
   )
 }
 
-// grunt-it: hivemind ticket refs (#229) in assistant text — render as interactive
-// <TicketRef> components with hover-preview + click-to-open-hivemind-ui. Refs #233.
-//
-// We split the text on the ticket-ref regex, render each non-matching segment through
-// the markdown renderer (so prose formatting, code blocks, etc. keep working), and
-// interleave <TicketRef> components for the matches. Trade-off: inline markdown features
-// that cross a #N boundary (rare — e.g. **bold #229 text**) won't span the split. Acceptable
-// for typical prose. The wins: clean visual (no [label](url) artifact), real hover tooltip,
-// proper click handler.
 const HIVEMIND_TICKET_RE = /(^|[^\w/#])#(\d{1,5})\b/g
-
-type TextSegment = { kind: "text"; text: string } | { kind: "ticket"; id: number }
-
-function splitOnTicketRefs(text: string): TextSegment[] {
-  const segments: TextSegment[] = []
-  let lastIndex = 0
-  HIVEMIND_TICKET_RE.lastIndex = 0
-  let match: RegExpExecArray | null
-  while ((match = HIVEMIND_TICKET_RE.exec(text)) !== null) {
-    const [whole, prefix, idStr] = match
-    const start = match.index + prefix.length
-    if (start > lastIndex) {
-      segments.push({ kind: "text", text: text.slice(lastIndex, start) })
-    }
-    segments.push({ kind: "ticket", id: Number(idStr) })
-    lastIndex = match.index + whole.length
-  }
-  if (lastIndex < text.length) {
-    segments.push({ kind: "text", text: text.slice(lastIndex) })
-  }
-  // Optimization: if no ticket matches, return a single text segment (caller can fast-path)
-  return segments.length > 0 ? segments : [{ kind: "text", text }]
-}
 
 function TextPart(props: { last: boolean; part: TextPart; message: AssistantMessage }) {
   const ctx = use()
   const { theme, syntax } = useTheme()
-  const segments = createMemo(() => splitOnTicketRefs(props.part.text.trim()))
+  const content = createMemo(() => {
+    const text = props.part.text.trim()
+    if (!text) return text
+    return text.replace(HIVEMIND_TICKET_RE, (match, prefix, id) => {
+      return `${prefix}[#${id}](https://hivemind.grunt.si/tasks/${id})`
+    })
+  })
   return (
-    <Show when={props.part.text.trim()}>
+    <Show when={content()}>
       <box id={"text-" + props.part.id} paddingLeft={3} marginTop={1} flexShrink={0}>
-        <Show
-          when={segments().some((s) => s.kind === "ticket")}
-          fallback={
-            <markdown
-              syntaxStyle={syntax()}
-              streaming={true}
-              internalBlockMode="top-level"
-              content={props.part.text.trim()}
-              tableOptions={{ style: "grid" }}
-              conceal={ctx.conceal()}
-              fg={theme.markdownText}
-              bg={theme.background}
-            />
-          }
-        >
-          {/*
-            #250 fix: render the entire paragraph as a single `<text>` block with
-            inline `<span>` text segments and `<TicketRef>` (`<a href>`) refs.
-            Previous shape was `<box flexDirection="row" flexWrap="wrap">` with one
-            `<markdown>` per text segment + one `<text>` per ref — that made each
-            segment a separate flex item, so the flex-wrap engine reordered them
-            per-item and refs landed on the wrong visual line.
-
-            Trade-off (acknowledged in the original splitOnTicketRefs comment): we
-            lose inline markdown rendering (bold/italic/code) for paragraphs that
-            contain at least one #N ref. Refs themselves render correctly inline
-            with proper text-wrap, which is the priority for #250.
-          */}
-          <text fg={theme.markdownText} bg={theme.background}>
-            <For each={segments()}>
-              {(seg) => (seg.kind === "text" ? <span>{seg.text}</span> : <TicketRef id={seg.id} />)}
-            </For>
-          </text>
-        </Show>
+        <markdown
+          syntaxStyle={syntax()}
+          streaming={true}
+          internalBlockMode="top-level"
+          content={content()}
+          tableOptions={{ style: "grid" }}
+          conceal={ctx.conceal()}
+          fg={theme.markdownText}
+          bg={theme.background}
+        />
       </box>
     </Show>
   )
