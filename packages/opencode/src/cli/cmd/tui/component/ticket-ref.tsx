@@ -19,7 +19,7 @@
 
 import { useTheme } from "../context/theme"
 
-const HIVEMIND_UI_BASE = process.env.HIVEMIND_UI_BASE ?? "http://localhost:5173"
+const HIVEMIND_UI_BASE = process.env.HIVEMIND_UI_BASE ?? "https://hivemind.grunt.si"
 
 export function TicketRef(props: { id: number }) {
   const { theme } = useTheme()
