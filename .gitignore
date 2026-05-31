@@ -26,6 +26,9 @@ target
 
 # Local dev files
 opencode-dev
+gruntcode-staging
+COMPACTION-TEST-INSTRUCTIONS.md
+scripts/continue-compaction-work.md
 UPCOMING_CHANGELOG.md
 logs/
 *.bun-build
