@@ -869,24 +869,64 @@ export const layer = Layer.effect(
         yield* status.set(ctx.sessionID, { type: "idle" })
       })
 
+      // Self-heal for the "thinking blocks in the latest assistant message
+      // cannot be modified" 400. Strip reasoning (and orphan empty-separator
+      // text) from the most recent prior assistant message so the conversation
+      // can be replayed. Returns true if it changed anything (i.e. a retry is
+      // worthwhile). Runs at most once per process() call via `thinkingHealed`.
+      let thinkingHealed = false
+      const healUnmodifiableThinking = Effect.fn("SessionProcessor.healUnmodifiableThinking")(function* () {
+        if (thinkingHealed) return false
+        thinkingHealed = true
+        const msgs = yield* session.messages({ sessionID: ctx.sessionID })
+        // Find the most recent assistant message that precedes the current one
+        // and carries reasoning parts.
+        const prior = [...msgs]
+          .reverse()
+          .find(
+            (m) =>
+              m.info.role === "assistant" &&
+              m.info.id !== ctx.assistantMessage.id &&
+              m.parts.some((p) => p.type === "reasoning"),
+          )
+        if (!prior) return false
+        let removed = 0
+        for (const part of prior.parts) {
+          const isReasoning = part.type === "reasoning"
+          const isSeparator = part.type === "text" && part.text === " "
+          if (!isReasoning && !isSeparator) continue
+          yield* session
+            .removePart({ sessionID: ctx.sessionID, messageID: prior.info.id, partID: part.id })
+            .pipe(Effect.ignore)
+          if (isReasoning) removed++
+        }
+        if (removed > 0) {
+          slog.info("healed unmodifiable thinking", { messageID: prior.info.id, removedReasoning: removed })
+        }
+        return removed > 0
+      })
+
       const process = Effect.fn("SessionProcessor.process")(function* (streamInput: LLM.StreamInput) {
         slog.info("process")
         ctx.needsCompaction = false
         ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
 
-        return yield* Effect.gen(function* () {
-          yield* Effect.gen(function* () {
+        const runStream = (si: LLM.StreamInput) =>
+          Effect.gen(function* () {
             ctx.currentText = undefined
             ctx.reasoningMap = {}
             yield* status.set(ctx.sessionID, { type: "busy" })
-            const stream = llm.stream(streamInput)
+            const stream = llm.stream(si)
 
             yield* stream.pipe(
               Stream.tap((event) => handleEvent(event)),
               Stream.takeUntil(() => ctx.needsCompaction),
               Stream.runDrain,
             )
-          }).pipe(
+          })
+
+        return yield* Effect.gen(function* () {
+          yield* runStream(streamInput).pipe(
             Effect.onInterrupt(() =>
               Effect.gen(function* () {
                 aborted = true
@@ -898,6 +938,21 @@ export const layer = Layer.effect(
             Effect.catchCauseIf(
               (cause) => !Cause.hasInterruptsOnly(cause),
               (cause) => Effect.fail(Cause.squash(cause)),
+            ),
+            // Self-heal: if the provider rejects the request because the latest
+            // assistant message's thinking blocks "cannot be modified", strip the
+            // offending reasoning from history, rebuild the model messages, and
+            // retry the stream exactly once (guarded by `thinkingHealed`).
+            Effect.catchIf(
+              (error) => SessionRetry.isUnmodifiableThinkingError(parse(error)) && !thinkingHealed,
+              () =>
+                Effect.gen(function* () {
+                  const healed = yield* healUnmodifiableThinking()
+                  if (!healed) return yield* Effect.fail(new Error("unmodifiable thinking: nothing to heal"))
+                  const msgs = yield* session.messages({ sessionID: ctx.sessionID })
+                  const rebuilt = yield* MessageV2.toModelMessagesEffect(msgs, input.model)
+                  yield* runStream({ ...streamInput, messages: rebuilt })
+                }),
             ),
             Effect.retry(
               SessionRetry.policy({

@@ -439,3 +439,70 @@ describe("session.message-v2.fromError", () => {
     })
   })
 })
+
+describe("session.retry.isUnmodifiableThinkingError", () => {
+  function apiErrorWith(opts: {
+    message?: string
+    statusCode?: number
+    isRetryable?: boolean
+    responseBody?: string
+  }): MessageV2.APIError {
+    return Schema.decodeUnknownSync(MessageV2.APIError.Schema)(
+      new MessageV2.APIError({
+        message: opts.message ?? "boom",
+        isRetryable: opts.isRetryable ?? false,
+        statusCode: opts.statusCode,
+        responseBody: opts.responseBody,
+      }).toObject(),
+    )
+  }
+
+  const ANTHROPIC_MESSAGE =
+    "messages.59.content.2: `thinking` or `redacted_thinking` blocks in the latest assistant message cannot be modified. These blocks must remain as they were in the original response."
+
+  test("detects the Anthropic unmodifiable-thinking 400 from message", () => {
+    const error = apiErrorWith({ message: ANTHROPIC_MESSAGE, statusCode: 400 })
+    expect(SessionRetry.isUnmodifiableThinkingError(error)).toBe(true)
+  })
+
+  test("detects it from the response body when message is generic", () => {
+    const error = apiErrorWith({
+      message: "Bad Request",
+      statusCode: 400,
+      responseBody: JSON.stringify({
+        type: "error",
+        error: { type: "invalid_request_error", message: ANTHROPIC_MESSAGE },
+      }),
+    })
+    expect(SessionRetry.isUnmodifiableThinkingError(error)).toBe(true)
+  })
+
+  test("detects the redacted_thinking variant", () => {
+    const error = apiErrorWith({
+      message: "redacted_thinking blocks in the latest assistant message cannot be modified",
+      statusCode: 400,
+    })
+    expect(SessionRetry.isUnmodifiableThinkingError(error)).toBe(true)
+  })
+
+  test("ignores unrelated 400 errors", () => {
+    const error = apiErrorWith({ message: "invalid model", statusCode: 400 })
+    expect(SessionRetry.isUnmodifiableThinkingError(error)).toBe(false)
+  })
+
+  test("ignores the thinking phrase on non-400 status codes", () => {
+    const error = apiErrorWith({ message: ANTHROPIC_MESSAGE, statusCode: 500 })
+    expect(SessionRetry.isUnmodifiableThinkingError(error)).toBe(false)
+  })
+
+  test("is not treated as auto-retryable by the retry policy", () => {
+    // The poisoned history would just be resent, so the standard retry path
+    // must NOT retry it (recovery happens via the processor self-heal instead).
+    const error = apiErrorWith({ message: ANTHROPIC_MESSAGE, statusCode: 400, isRetryable: false })
+    expect(SessionRetry.retryable(error, retryProvider)).toBeUndefined()
+  })
+
+  test("ignores non-APIError shapes", () => {
+    expect(SessionRetry.isUnmodifiableThinkingError(wrap("cannot be modified"))).toBe(false)
+  })
+})
