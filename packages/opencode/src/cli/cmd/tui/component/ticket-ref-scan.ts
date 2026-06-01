@@ -1,109 +1,87 @@
-// grunt-it: hivemind ticket-ref splitting for the assistant-chat inline links (#331).
+// grunt-it: hivemind ticket-ref hit-testing for the assistant-chat hover preview (#331).
 //
-// Approach (build-verified): render `#N` refs as inline `<a href>` OpenTUI LinkRenderables
-// — clean label, OSC-8 hyperlink metadata (no URL leak), native terminal hover-highlight
-// + click. The catch is OpenTUI's hard tradeoff: a `#N` ref can only flow correctly inline
-// inside a parent `<text>` (TextNode wrap math, #250), and `<text>`+`<span>` don't render
-// markdown. So a PARAGRAPH that contains a ref is rendered as plain inline text+links;
-// paragraphs WITHOUT refs keep full `<markdown>`.
+// The accurate, flicker-free approach: the message renders as a SINGLE <markdown> block
+// with refs as PLAIN `#N` text (no link rewrite → no URL leak, full markdown, no flicker).
+// To know which ref the cursor is over WITHOUT fragile column estimation, we read the
+// renderer's actual framebuffer: the characters truly painted on screen at the cursor's
+// row. We find the `#`+digits token the cursor sits on and return its id. This is exact
+// because it uses rendered cells, not a reconstruction of wrapped/concealed layout.
 //
-// This module provides:
-//  - `splitTextIntoBlocks`: split a message into paragraph blocks, tagging which contain
-//    refs (so the caller renders ref-blocks inline and ref-free blocks as markdown).
-//  - `splitOnTicketRefs`: split one block into alternating text / ticket segments.
+// Buffer shape (OpenTUI OptimizedBuffer, all public): `buffers.char` is a Uint32Array of
+// code points indexed `y * width + x`.
 
-/** Matches a hivemind ticket reference. Anchored on a non-word, non-slash, non-hash
- *  boundary so hex colors (#fff), paths (foo/#3) and `##` heading sequences don't match. */
-export const TICKET_REF_RE = /(^|[^\w/#])#(\d{1,5})\b/g
-
-export type TextSegment = { kind: "text"; text: string } | { kind: "ticket"; id: number }
-
-export interface TextBlock {
-  /** The raw text of this paragraph block (without the trailing blank-line separator). */
-  text: string
-  /** True if the block contains at least one ticket ref. */
-  hasRef: boolean
+export interface FrameBufferLike {
+  readonly width: number
+  readonly height: number
+  readonly buffers: { char: Uint32Array }
 }
 
-/** Does this text contain at least one hivemind ticket ref? */
-export function hasTicketRef(text: string): boolean {
-  TICKET_REF_RE.lastIndex = 0
-  return TICKET_REF_RE.test(text)
+const HASH = "#".codePointAt(0)!
+const ZERO = "0".codePointAt(0)!
+const NINE = "9".codePointAt(0)!
+
+function codeAt(buf: FrameBufferLike, x: number, y: number): number {
+  if (x < 0 || y < 0 || x >= buf.width || y >= buf.height) return 0
+  return buf.buffers.char[y * buf.width + x] ?? 0
 }
+
+const isDigit = (c: number) => c >= ZERO && c <= NINE
 
 /**
- * Split assistant text into paragraph blocks on blank-line boundaries, preserving the
- * blank lines as their own separator blocks so re-joining reproduces the original spacing.
- * Each non-blank block is tagged with whether it contains a ticket ref.
+ * Given the absolute screen cell (x,y) under the cursor, read the framebuffer and return
+ * the hivemind ticket id of the `#N` token the cursor is on — or null if the cursor isn't
+ * over a `#<digits>` token. Pixel-accurate: it inspects the characters actually rendered.
  *
- * Why paragraph-level: it minimizes the markdown-formatting loss from the inline-`<a>`
- * tradeoff — only the specific paragraphs that mention a `#N` render as plain text; every
- * other paragraph (and all headings, lists, code blocks that don't contain a bare `#N`)
- * keeps full markdown rendering.
- *
- * Note: a fenced code block can contain blank lines; splitting on blank lines would break
- * it. To stay safe we DON'T split inside fenced code (``` ... ```). Blocks that are inside
- * a code fence are always treated as markdown (hasRef=false) so code is never linkified.
+ * Algorithm: from the cursor cell, walk left while we're inside a digit run; then require
+ * the char immediately left of the run's first digit to be `#`. Also handles the cursor
+ * sitting directly on the `#`. Then read digits rightward to form the full id. A leading
+ * `#` must not itself be preceded by another `#`/digit/word char (mirrors the text regex's
+ * boundary rule so `##2` or `a1#2` style noise doesn't match).
  */
-export function splitTextIntoBlocks(text: string): TextBlock[] {
-  const lines = text.split("\n")
-  const blocks: TextBlock[] = []
-  let current: string[] = []
-  let inFence = false
-  // True if the block being accumulated touches a code fence at any point — such a block
-  // must render as markdown (never linkified), so a `#N` inside code isn't turned into a link.
-  let blockTouchesFence = false
+export function ticketIdAtCell(buf: FrameBufferLike, x: number, y: number): number | null {
+  const here = codeAt(buf, x, y)
+  const onHash = here === HASH
+  const onDigit = isDigit(here)
+  if (!onHash && !onDigit) return null
 
-  const flush = () => {
-    if (current.length === 0) return
-    const blockText = current.join("\n")
-    blocks.push({ text: blockText, hasRef: blockTouchesFence ? false : hasTicketRef(blockText) })
-    current = []
-    blockTouchesFence = false
+  // Find the hash column: either we're on it, or walk left across digits to find it.
+  let hashX = x
+  if (onDigit) {
+    let i = x
+    while (i - 1 >= 0 && isDigit(codeAt(buf, i - 1, y))) i--
+    // The char just left of the first digit must be '#'.
+    if (codeAt(buf, i - 1, y) !== HASH) return null
+    hashX = i - 1
   }
 
-  for (const line of lines) {
-    const isFenceMarker = /^\s*```/.test(line)
-    if (isFenceMarker) {
-      inFence = !inFence
-      blockTouchesFence = true
-    }
-    // A blank line outside a fence ends the current paragraph block.
-    if (!inFence && line.trim() === "" && !isFenceMarker) {
-      flush()
-      // Keep the blank line as a separator block so spacing is preserved on re-render.
-      blocks.push({ text: "", hasRef: false })
-      continue
-    }
-    current.push(line)
+  // Boundary: the char before '#' must not be a word char, '/', or '#' (matches the
+  // TICKET_REF_RE rule; prevents matching inside e.g. `foo#12` or `##12`).
+  const before = codeAt(buf, hashX - 1, y)
+  if (before === HASH || before === 0x2f /* / */ || isWordChar(before)) {
+    // Allow start-of-line (before === 0 means empty cell / line start).
+    if (before !== 0) return null
   }
-  flush()
-  return blocks
+
+  // Read digits right of '#'.
+  let n = 0
+  let count = 0
+  let i = hashX + 1
+  while (count < 5 && isDigit(codeAt(buf, i, y))) {
+    n = n * 10 + (codeAt(buf, i, y) - ZERO)
+    i++
+    count++
+  }
+  if (count === 0) return null
+  return n
 }
 
-/**
- * Split one block of text into alternating plain-text and ticket-ref segments. Used to
- * render a ref-bearing block as a single `<text>` with inline `<span>` (text) and
- * `<TicketRef>` (`<a href>`) children, so refs flow correctly with the surrounding prose.
- */
-export function splitOnTicketRefs(text: string): TextSegment[] {
-  const segments: TextSegment[] = []
-  let lastIndex = 0
-  TICKET_REF_RE.lastIndex = 0
-  let match: RegExpExecArray | null
-  while ((match = TICKET_REF_RE.exec(text)) !== null) {
-    const whole = match[0]
-    const prefix = match[1] ?? ""
-    const idStr = match[2]
-    const start = match.index + prefix.length
-    if (start > lastIndex) {
-      segments.push({ kind: "text", text: text.slice(lastIndex, start) })
-    }
-    segments.push({ kind: "ticket", id: Number(idStr) })
-    lastIndex = match.index + whole.length
-  }
-  if (lastIndex < text.length) {
-    segments.push({ kind: "text", text: text.slice(lastIndex) })
-  }
-  return segments.length > 0 ? segments : [{ kind: "text", text }]
+function isWordChar(c: number): boolean {
+  if (c === 0) return false
+  // a-z, A-Z, 0-9, _
+  return (
+    (c >= 0x61 && c <= 0x7a) ||
+    (c >= 0x41 && c <= 0x5a) ||
+    (c >= 0x30 && c <= 0x39) ||
+    c === 0x5f
+  )
 }

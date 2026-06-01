@@ -1,81 +1,76 @@
 import { expect, test, describe } from "bun:test"
-import {
-  hasTicketRef,
-  splitTextIntoBlocks,
-  splitOnTicketRefs,
-} from "@/cli/cmd/tui/component/ticket-ref-scan"
+import { ticketIdAtCell, type FrameBufferLike } from "@/cli/cmd/tui/component/ticket-ref-scan"
 
-describe("hasTicketRef", () => {
-  test("detects a ref", () => {
-    expect(hasTicketRef("see #331 here")).toBe(true)
-  })
-  test("ignores hex colors and paths and headings", () => {
-    expect(hasTicketRef("color #fff")).toBe(false)
-    expect(hasTicketRef("path foo/#3")).toBe(false)
-    expect(hasTicketRef("## Heading")).toBe(false)
-  })
-  test("empty → false", () => {
-    expect(hasTicketRef("")).toBe(false)
-  })
-})
+/** Build a single-row framebuffer from a string for hit-testing. */
+function fb(row: string, width = Math.max(row.length, 40)): FrameBufferLike {
+  const char = new Uint32Array(width * 1)
+  for (let x = 0; x < row.length; x++) char[x] = row.codePointAt(x)!
+  return { width, height: 1, buffers: { char } }
+}
 
-describe("splitOnTicketRefs", () => {
-  test("alternates text and ticket segments", () => {
-    expect(splitOnTicketRefs("see #331 now")).toEqual([
-      { kind: "text", text: "see " },
-      { kind: "ticket", id: 331 },
-      { kind: "text", text: " now" },
-    ])
-  })
-  test("multiple refs", () => {
-    const segs = splitOnTicketRefs("#11 and #22")
-    expect(segs).toEqual([
-      { kind: "ticket", id: 11 },
-      { kind: "text", text: " and " },
-      { kind: "ticket", id: 22 },
-    ])
-  })
-  test("no refs → single text segment", () => {
-    expect(splitOnTicketRefs("plain text")).toEqual([{ kind: "text", text: "plain text" }])
-  })
-  test("does not match hex/path", () => {
-    expect(splitOnTicketRefs("#fff and foo/#3")).toEqual([{ kind: "text", text: "#fff and foo/#3" }])
-  })
-})
-
-describe("splitTextIntoBlocks", () => {
-  test("tags ref-bearing vs ref-free paragraphs", () => {
-    const text = "Intro paragraph no ref.\n\nThis mentions #42 ticket.\n\nOutro no ref."
-    const blocks = splitTextIntoBlocks(text)
-    const nonBlank = blocks.filter((b) => b.text !== "")
-    expect(nonBlank.map((b) => b.hasRef)).toEqual([false, true, false])
+describe("ticketIdAtCell", () => {
+  test("cursor on the # returns the id", () => {
+    const buf = fb("see #331 here")
+    expect(ticketIdAtCell(buf, 4, 0)).toBe(331) // '#'
   })
 
-  test("preserves blank-line separators for re-render spacing", () => {
-    const text = "a\n\nb"
-    const blocks = splitTextIntoBlocks(text)
-    expect(blocks.map((b) => b.text)).toEqual(["a", "", "b"])
+  test("cursor on a digit returns the id", () => {
+    const buf = fb("see #331 here")
+    expect(ticketIdAtCell(buf, 5, 0)).toBe(331) // '3'
+    expect(ticketIdAtCell(buf, 7, 0)).toBe(331) // last '1'
   })
 
-  test("does not split inside fenced code blocks", () => {
-    const text = "```\ncode line 1\n\ncode line 2\n```\n\nafter #5"
-    const blocks = splitTextIntoBlocks(text)
-    // The fenced block (with its internal blank line) stays one block; the #5 paragraph is separate.
-    const code = blocks.find((b) => b.text.includes("code line 1"))
-    expect(code?.text).toContain("code line 2") // not split on the blank line inside the fence
-    expect(code?.hasRef).toBe(false)
-    const refBlock = blocks.find((b) => b.text.includes("#5"))
-    expect(refBlock?.hasRef).toBe(true)
+  test("cursor off the ref returns null", () => {
+    const buf = fb("see #331 here")
+    expect(ticketIdAtCell(buf, 0, 0)).toBeNull() // 's'
+    expect(ticketIdAtCell(buf, 9, 0)).toBeNull() // 'h'
+    expect(ticketIdAtCell(buf, 8, 0)).toBeNull() // space after id
   })
 
-  test("a #N inside a code fence is NOT treated as a ref", () => {
-    const text = "```\nrun task #99 now\n```"
-    const blocks = splitTextIntoBlocks(text)
-    expect(blocks.every((b) => b.hasRef === false)).toBe(true)
+  test("two refs on a row resolve independently by exact position", () => {
+    const buf = fb("a #11 b #22 c")
+    expect(ticketIdAtCell(buf, 2, 0)).toBe(11) // '#11'
+    expect(ticketIdAtCell(buf, 3, 0)).toBe(11)
+    expect(ticketIdAtCell(buf, 8, 0)).toBe(22) // '#22'
+    expect(ticketIdAtCell(buf, 6, 0)).toBeNull() // 'b' between them
   })
 
-  test("single paragraph with ref → one ref block", () => {
-    const blocks = splitTextIntoBlocks("just #7 inline")
-    expect(blocks).toEqual([{ text: "just #7 inline", hasRef: true }])
+  test("does not match #word or hex-ish (# followed by non-digit)", () => {
+    const buf = fb("color #fff x")
+    expect(ticketIdAtCell(buf, 6, 0)).toBeNull() // '#'
+    expect(ticketIdAtCell(buf, 7, 0)).toBeNull() // 'f'
+  })
+
+  test("does not match when # is preceded by a word char (foo#12)", () => {
+    const buf = fb("foo#12 bar")
+    expect(ticketIdAtCell(buf, 3, 0)).toBeNull() // '#'
+    expect(ticketIdAtCell(buf, 4, 0)).toBeNull() // '1'
+  })
+
+  test("does not match double-hash ##12", () => {
+    const buf = fb("see ##12 x")
+    // cursor on the second '#': preceded by '#' → reject
+    expect(ticketIdAtCell(buf, 5, 0)).toBeNull()
+    // cursor on a digit: walks left to second '#', whose left is '#' → boundary reject
+    expect(ticketIdAtCell(buf, 6, 0)).toBeNull()
+  })
+
+  test("ref at start of row matches", () => {
+    const buf = fb("#42 leads")
+    expect(ticketIdAtCell(buf, 0, 0)).toBe(42)
+    expect(ticketIdAtCell(buf, 2, 0)).toBe(42)
+  })
+
+  test("empty cell / out of range → null", () => {
+    const buf = fb("see #5")
+    expect(ticketIdAtCell(buf, 100, 0)).toBeNull()
+    expect(ticketIdAtCell(buf, 5, 5)).toBeNull()
+    expect(ticketIdAtCell(buf, -1, 0)).toBeNull()
+  })
+
+  test("caps id length at 5 digits", () => {
+    const buf = fb("see #123456 here")
+    // reads first 5 digits → 12345 (matches the <=5 digit rule)
+    expect(ticketIdAtCell(buf, 4, 0)).toBe(12345)
   })
 })

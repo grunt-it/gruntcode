@@ -65,8 +65,9 @@ import { DialogForkFromTimeline } from "./dialog-fork-from-timeline"
 import { DialogSessionRename } from "../../component/dialog-session-rename"
 import { Sidebar } from "./sidebar"
 import { SubagentFooter } from "./subagent-footer.tsx"
-import { TicketRef } from "@tui/component/ticket-ref"
-import { splitTextIntoBlocks, splitOnTicketRefs } from "@tui/component/ticket-ref-scan"
+import open from "open"
+import { useHivemind } from "@tui/context/hivemind"
+import { ticketIdAtCell } from "@tui/component/ticket-ref-scan"
 import { LANGUAGE_EXTENSIONS } from "@/lsp/language"
 import parsers from "../../../../../../parsers-config.ts"
 import * as Clipboard from "../../util/clipboard"
@@ -1658,48 +1659,64 @@ function ReasoningHeader(props: {
   )
 }
 
+const HIVEMIND_UI_BASE = process.env.HIVEMIND_UI_BASE ?? "https://hivemind.grunt.si"
+
 function TextPart(props: { last: boolean; part: TextPart; message: AssistantMessage }) {
   const ctx = use()
   const { theme, syntax } = useTheme()
+  const hive = useHivemind()
+  const renderer = useRenderer()
+  // Render the whole message as ONE <markdown> block — the only structure that streams
+  // without flicker (a single renderable the markdown engine diffs incrementally), keeps
+  // full markdown formatting, and wraps correctly (#250). Refs render as PLAIN `#N`
+  // (NO `[#N](url)` rewrite): build-verified that a markdown link leaks its URL in this
+  // app, and an inline `<a>` can't live inside <markdown>. Plain `#N` is the only clean,
+  // flicker-free, wrap-correct form.
+  //
+  // Hover + click (#331) are done by reading the renderer's FRAMEBUFFER at the cursor:
+  // ticketIdAtCell inspects the characters actually painted on screen and returns the id
+  // of the `#N` token under the cursor — pixel-accurate, no column estimation, no extra
+  // renderables. Returns null off-ref → the hover card closes.
   const content = createMemo(() => props.part.text.trim())
-  // Split the message into paragraph blocks (#331). Blocks WITHOUT a ticket ref render as
-  // full <markdown> (formatting preserved). Blocks WITH a ref render as a single inline
-  // <text> of <span> prose + <TicketRef> (<a href>) refs — clean labels, OSC-8 hyperlinks
-  // with native hover-highlight + click, and correct character-level wrap (#250). The
-  // tradeoff (OpenTUI inline-flow vs markdown): a ref-bearing paragraph loses inline
-  // markdown formatting (bold/italic/code) — but only that paragraph, nothing else.
-  const blocks = createMemo(() => splitTextIntoBlocks(content()))
+
+  const idAt = (event: { x: number; y: number }): number | null => {
+    const buf = (renderer as unknown as { currentRenderBuffer?: { width: number; height: number; buffers: { char: Uint32Array } } })
+      .currentRenderBuffer
+    if (!buf) return null
+    return ticketIdAtCell(buf, event.x, event.y)
+  }
 
   return (
     <Show when={content()}>
-      <box id={"text-" + props.part.id} paddingLeft={3} marginTop={1} flexShrink={0} flexDirection="column">
-        <For each={blocks()}>
-          {(block) => (
-            <Show
-              when={block.hasRef}
-              fallback={
-                <Show when={block.text !== ""} fallback={<text> </text>}>
-                  <markdown
-                    syntaxStyle={syntax()}
-                    streaming={true}
-                    internalBlockMode="top-level"
-                    content={block.text}
-                    tableOptions={{ style: "grid" }}
-                    conceal={ctx.conceal()}
-                    fg={theme.markdownText}
-                    bg={theme.background}
-                  />
-                </Show>
-              }
-            >
-              <text fg={theme.markdownText} bg={theme.background}>
-                <For each={splitOnTicketRefs(block.text)}>
-                  {(seg) => (seg.kind === "text" ? <span>{seg.text}</span> : <TicketRef id={seg.id} />)}
-                </For>
-              </text>
-            </Show>
-          )}
-        </For>
+      <box
+        id={"text-" + props.part.id}
+        paddingLeft={3}
+        marginTop={1}
+        flexShrink={0}
+        onMouseMove={(event: { x: number; y: number }) => {
+          const id = idAt(event)
+          if (id == null) {
+            hive.triggerHoverLeave()
+            return
+          }
+          hive.triggerHoverEnter(id, event.x, event.y)
+        }}
+        onMouseOut={() => hive.triggerHoverLeave()}
+        onMouseUp={(event: { x: number; y: number }) => {
+          const id = idAt(event)
+          if (id != null) open(`${HIVEMIND_UI_BASE}/tasks/${id}`).catch(() => {})
+        }}
+      >
+        <markdown
+          syntaxStyle={syntax()}
+          streaming={true}
+          internalBlockMode="top-level"
+          content={content()}
+          tableOptions={{ style: "grid" }}
+          conceal={ctx.conceal()}
+          fg={theme.markdownText}
+          bg={theme.background}
+        />
       </box>
     </Show>
   )
