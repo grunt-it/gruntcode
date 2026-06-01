@@ -4,15 +4,28 @@
 
 ## What's different from opencode
 
-The only changes from upstream are a small, deliberately-scoped patch series that makes opencode work better with [hivemind-mcp](https://github.com/grunt-it/hivemind-mcp) — grunt-it's shared coordination MCP for parallel agent sessions.
+The changes from upstream fall into two buckets: a **hivemind-integration patch series** (the original reason for the fork) and a small set of **hivemind-aware TUI enhancements** that make ticket references first-class in the chat view. All are deliberately scoped to keep weekly rebases on upstream cheap.
 
-Current patches (each tracked in [hivemind #222](https://github.com/grunt-it/hivemind-mcp)):
+### Hivemind-integration patches
+
+These make opencode work better with [hivemind-mcp](https://github.com/grunt-it/hivemind-mcp) — grunt-it's shared coordination MCP for parallel agent sessions. Each is tracked in [hivemind #222](https://github.com/grunt-it/hivemind-mcp):
 
 1. **Auto-announce-at-session-start.** TUI sessions automatically register themselves on the hivemind peer registry. No `hivemind_announce` TAKEOFF call needed.
 2. **Attach subscribes to all session message updates.** When a wake fires via `/session/<id>/prompt_async`, the attach-client TUI renders the response. (Without this patch, externally-triggered messages land in the server's db but never reach the user's screen.)
 3. **`OPENCODE_SERVER_URL` propagation.** The attach binary reads and propagates this env var to all subprocesses (MCP children, etc.) so agents can find their serve daemon without a launch-script shim.
 4. **`--peer-id <id>` flag.** Lets launch scripts set the tab's hivemind peer-id at startup instead of via TAKEOFF gymnastics. Powers patch #1.
 5. **Turn-end hook into the hivemind loop primitive ([#266](https://github.com/grunt-it/hivemind-mcp/issues/266) Phase 2 — default-on).** Every step-finish fires `hivemind_record_turn_end` into the hivemind MCP, which evaluates the three-layer goal-loop contract + decides to auto-wake the same peer (`continue`), wake the parent peer (`escalate` / `await-review`), or no-op. Per-tool-call `hivemind_loop_progress` bumps the progress timestamp. Fire-and-forget via `Effect.forkIn(scope)` — hook failures NEVER break the TUI. ON by default as of Phase 2; opt out for a specific tab/session via `OPENCODE_HIVEMIND_LOOP_ENABLED=0`. Pairs with a 3-turn grace window in `hivemind-mcp` (#266 Phase 2) — peers have 3 turns to call `hivemind_set_loop_goal` before the MCP escalates with `violationKind=missing-loop-goal`.
+
+### TUI enhancements
+
+Hivemind-aware quality-of-life changes in the assistant chat view (tracked in [hivemind #331](https://github.com/grunt-it/hivemind-mcp)):
+
+1. **Clickable, hoverable hivemind ticket refs.** A bare `#N` (e.g. `#331`) in an assistant message is detected and made interactive:
+   - **Colored + underlined** in the theme link color so refs stand out from prose.
+   - **Hover** shows a preview card with the ticket's title, status, priority, zone, owner, and a scope snippet (fetched live from the local hivemind-api, cached per id).
+   - **Click** opens the ticket in hivemind-ui (`https://hivemind.grunt.si/tasks/<id>`, override with `HIVEMIND_UI_BASE`).
+
+   **How it works (and why):** the message renders as a single `<markdown>` block (the only structure that streams without flicker and keeps full markdown formatting + correct text-wrap). Refs stay as plain `#N` text — they are deliberately **not** rewritten to a markdown link, because OpenTUI's markdown renderer leaks the link URL into the visible text, and an inline OSC-8 `<a>` can't live inside a `<markdown>` block. Hover/click instead read the renderer's actual framebuffer (`currentRenderBuffer.buffers.char`) to find the `#N` token painted under the cursor — pixel-accurate, no column estimation. The ref color is applied in a per-frame post-process (`addPostProcessFn`) that recolors the painted `#N` cells. Boundary rules match the detection regex, so `#fff` (hex), `foo#12`, and `##12` are never treated as refs. Hover/click are inert when hivemind-api is offline.
 
 Everything else is opencode upstream. We rebase against `anomalyco/opencode:dev` weekly.
 
@@ -28,7 +41,7 @@ If upstream accepts a patch, we drop it on next rebase. The fork shrinks over ti
 
 ## Stability and support
 
-**gruntcode tracks opencode upstream.** If you don't need hivemind integration, install [opencode](https://opencode.ai) directly — it's the same binary minus our four patches.
+**gruntcode tracks opencode upstream.** If you don't need hivemind integration, install [opencode](https://opencode.ai) directly — it's the same binary minus our hivemind patches + TUI enhancements.
 
 We do NOT promise:
 - API stability beyond what opencode itself promises
@@ -36,7 +49,7 @@ We do NOT promise:
 - Backports of opencode bugfixes (you get them on next rebase, typically within a week)
 
 We DO promise:
-- The four hivemind-integration patches stay working as long as the hivemind-mcp tools they target stay working
+- The hivemind-integration patches + TUI enhancements stay working as long as the hivemind-mcp tools they target stay working
 - Weekly rebase on upstream `dev`
 - Tagged releases as `vX.Y.Z-grunt.N` where `X.Y.Z` is the upstream version we rebased on
 
@@ -78,6 +91,8 @@ upstream/dev
 ├── upstream commits (we rebase on these)
 └── grunt-it patches (cherry-picked on top, one commit each)
     ├── chore(grunt): branding (README, GRUNTCODE.md, etc.)
+    ├── feat(grunt/tui): hivemind ticket-ref hover/click + color (#331)
+    ├── feat(grunt): turn-end hook into hivemind loop primitive (#222 patch 5 / #266)
     ├── feat(grunt): --peer-id flag (#222 patch 4)
     ├── feat(grunt): OPENCODE_SERVER_URL propagation (#222 patch 3)
     ├── feat(grunt): attach subscribes to all session updates (#222 patch 2)

@@ -28,10 +28,12 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import * as DateTime from "effect/DateTime"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { MCP } from "@/mcp"
+import { Feedback } from "./feedback"
 import { HivemindLoopHook } from "./hivemind-loop-hook"
 import { Usage, type LLMEvent } from "@opencode-ai/llm"
 
 const DOOM_LOOP_THRESHOLD = 3
+const CROSS_TURN_DOOM_LOOP_THRESHOLD = 3
 const log = Log.create({ service: "session.processor" })
 
 export type Result = "compact" | "stop" | "continue"
@@ -97,6 +99,7 @@ export const layer = Layer.effect(
     const llm = yield* LLM.Service
     const permission = yield* Permission.Service
     const plugin = yield* Plugin.Service
+    const feedback = yield* Feedback.Service
     const summary = yield* SessionSummary.Service
     const scope = yield* Scope.Scope
     const status = yield* SessionStatus.Service
@@ -442,6 +445,66 @@ export const layer = Layer.effect(
                   JSON.stringify(part.state.input) === JSON.stringify(input),
               )
             ) {
+              // Cross-turn doom loop: same tool+input repeated across consecutive turns
+              const recentMsgs = yield* session
+                .messages({
+                  sessionID: ctx.sessionID,
+                  limit: CROSS_TURN_DOOM_LOOP_THRESHOLD * 5,
+                })
+                .pipe(Effect.catch(() => Effect.succeed([] as MessageV2.WithParts[])))
+
+              let consecutiveCount = 1 // current turn counts as 1
+              for (let i = recentMsgs.length - 1; i >= 0; i--) {
+                const msg = recentMsgs[i]
+                if (msg.info.role !== "assistant") continue
+                if (msg.info.id === ctx.assistantMessage.id) continue // skip current
+
+                // Skip assistant messages with no tool parts (e.g., summary messages)
+                const hasAnyTool = msg.parts.some((p: MessageV2.Part) => p.type === "tool")
+                if (!hasAnyTool) continue
+
+                const hasMatchingTool = msg.parts.some(
+                  (p: MessageV2.Part) =>
+                    p.type === "tool" &&
+                    p.state.status !== "pending" &&
+                    p.tool === value.name &&
+                    JSON.stringify(p.state.input) === JSON.stringify(input),
+                )
+
+                if (hasMatchingTool) {
+                  consecutiveCount++
+                } else {
+                  break // streak broken — different tool or args
+                }
+
+                if (consecutiveCount >= CROSS_TURN_DOOM_LOOP_THRESHOLD) {
+                  yield* feedback.record({
+                    sessionID: ctx.sessionID,
+                    type: "repeated-tool",
+                    tool: value.name,
+                    input,
+                    turns: consecutiveCount,
+                    timestamp: Date.now(),
+                  })
+                  yield* HivemindLoopHook.enhanceViolation({
+                    enabled: flags.hivemindLoopEnabled,
+                    mcp: mcpOption,
+                    scope,
+                    tool: value.name,
+                    turns: consecutiveCount,
+                  })
+                  const agent = yield* agents.get(ctx.assistantMessage.agent)
+                  yield* permission.ask({
+                    permission: "doom_loop",
+                    patterns: [value.name],
+                    sessionID: ctx.assistantMessage.sessionID,
+                    metadata: { tool: value.name, input, crossTurn: true },
+                    always: [value.name],
+                    ruleset: agent.permission,
+                  })
+                  return
+                }
+              }
               return
             }
 
@@ -806,24 +869,64 @@ export const layer = Layer.effect(
         yield* status.set(ctx.sessionID, { type: "idle" })
       })
 
+      // Self-heal for the "thinking blocks in the latest assistant message
+      // cannot be modified" 400. Strip reasoning (and orphan empty-separator
+      // text) from the most recent prior assistant message so the conversation
+      // can be replayed. Returns true if it changed anything (i.e. a retry is
+      // worthwhile). Runs at most once per process() call via `thinkingHealed`.
+      let thinkingHealed = false
+      const healUnmodifiableThinking = Effect.fn("SessionProcessor.healUnmodifiableThinking")(function* () {
+        if (thinkingHealed) return false
+        thinkingHealed = true
+        const msgs = yield* session.messages({ sessionID: ctx.sessionID })
+        // Find the most recent assistant message that precedes the current one
+        // and carries reasoning parts.
+        const prior = [...msgs]
+          .reverse()
+          .find(
+            (m) =>
+              m.info.role === "assistant" &&
+              m.info.id !== ctx.assistantMessage.id &&
+              m.parts.some((p) => p.type === "reasoning"),
+          )
+        if (!prior) return false
+        let removed = 0
+        for (const part of prior.parts) {
+          const isReasoning = part.type === "reasoning"
+          const isSeparator = part.type === "text" && part.text === " "
+          if (!isReasoning && !isSeparator) continue
+          yield* session
+            .removePart({ sessionID: ctx.sessionID, messageID: prior.info.id, partID: part.id })
+            .pipe(Effect.ignore)
+          if (isReasoning) removed++
+        }
+        if (removed > 0) {
+          slog.info("healed unmodifiable thinking", { messageID: prior.info.id, removedReasoning: removed })
+        }
+        return removed > 0
+      })
+
       const process = Effect.fn("SessionProcessor.process")(function* (streamInput: LLM.StreamInput) {
         slog.info("process")
         ctx.needsCompaction = false
         ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
 
-        return yield* Effect.gen(function* () {
-          yield* Effect.gen(function* () {
+        const runStream = (si: LLM.StreamInput) =>
+          Effect.gen(function* () {
             ctx.currentText = undefined
             ctx.reasoningMap = {}
             yield* status.set(ctx.sessionID, { type: "busy" })
-            const stream = llm.stream(streamInput)
+            const stream = llm.stream(si)
 
             yield* stream.pipe(
               Stream.tap((event) => handleEvent(event)),
               Stream.takeUntil(() => ctx.needsCompaction),
               Stream.runDrain,
             )
-          }).pipe(
+          })
+
+        return yield* Effect.gen(function* () {
+          yield* runStream(streamInput).pipe(
             Effect.onInterrupt(() =>
               Effect.gen(function* () {
                 aborted = true
@@ -835,6 +938,21 @@ export const layer = Layer.effect(
             Effect.catchCauseIf(
               (cause) => !Cause.hasInterruptsOnly(cause),
               (cause) => Effect.fail(Cause.squash(cause)),
+            ),
+            // Self-heal: if the provider rejects the request because the latest
+            // assistant message's thinking blocks "cannot be modified", strip the
+            // offending reasoning from history, rebuild the model messages, and
+            // retry the stream exactly once (guarded by `thinkingHealed`).
+            Effect.catchIf(
+              (error) => SessionRetry.isUnmodifiableThinkingError(parse(error)) && !thinkingHealed,
+              () =>
+                Effect.gen(function* () {
+                  const healed = yield* healUnmodifiableThinking()
+                  if (!healed) return yield* Effect.fail(new Error("unmodifiable thinking: nothing to heal"))
+                  const msgs = yield* session.messages({ sessionID: ctx.sessionID })
+                  const rebuilt = yield* MessageV2.toModelMessagesEffect(msgs, input.model)
+                  yield* runStream({ ...streamInput, messages: rebuilt })
+                }),
             ),
             Effect.retry(
               SessionRetry.policy({
@@ -906,6 +1024,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Config.defaultLayer),
     Layer.provide(RuntimeFlags.defaultLayer),
     Layer.provide(EventV2Bridge.defaultLayer),
+    Layer.provide(Feedback.defaultLayer),
   ),
 )
 

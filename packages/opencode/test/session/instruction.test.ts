@@ -19,9 +19,13 @@ const it = testEffect(Layer.mergeAll(CrossSpawnSpawner.defaultLayer, NodeFileSys
 
 const configLayer = TestConfig.layer()
 
-const instructionLayer = (global: Partial<Global.Interface>, flags: Partial<RuntimeFlags.Info> = {}) =>
+const instructionLayer = (
+  global: Partial<Global.Interface>,
+  flags: Partial<RuntimeFlags.Info> = {},
+  config = configLayer,
+) =>
   Instruction.layer.pipe(
-    Layer.provide(configLayer),
+    Layer.provide(config),
     Layer.provide(AppFileSystem.defaultLayer),
     Layer.provide(FetchHttpClient.layer),
     Layer.provide(Global.layerWith(global)),
@@ -29,9 +33,9 @@ const instructionLayer = (global: Partial<Global.Interface>, flags: Partial<Runt
   )
 
 const provideInstruction =
-  (global: Partial<Global.Interface>, flags?: Partial<RuntimeFlags.Info>) =>
+  (global: Partial<Global.Interface>, flags?: Partial<RuntimeFlags.Info>, config?: typeof configLayer) =>
   <A, E, R>(self: Effect.Effect<A, E, R>) =>
-    self.pipe(Effect.provide(instructionLayer(global, flags)))
+    self.pipe(Effect.provide(instructionLayer(global, flags, config)))
 
 const write = (filepath: string, content: string) =>
   Effect.gen(function* () {
@@ -248,6 +252,84 @@ describe("Instruction.systemPaths global config", () => {
         const paths = yield* svc.systemPaths()
         expect(paths.has(path.join(globalTmp, "AGENTS.md"))).toBe(true)
       }).pipe(provideInstance(projectTmp), provideInstruction({ home: globalTmp, config: globalTmp }))
+    }),
+  )
+})
+
+// Principle A: directive docs must be PHYSICALLY injected, not left for the model to
+// discover. opencode auto-loads AGENTS.md/CLAUDE.md, but project rule files (e.g.
+// `.opencode/rules/*.md`) are injected ONLY when listed in opencode.json `instructions`.
+// These tests pin that contract so the app-template (and fleet) can rely on it.
+describe("Instruction config.instructions injection", () => {
+  it.live("injects a project rule file listed in config.instructions", () =>
+    Effect.gen(function* () {
+      const projectTmp = yield* tmpWithFiles({
+        ".opencode/rules/typegen.md": "# Typegen rule\nbun run typegen",
+        ".opencode/rules/auth-sso.md": "# Auth SSO rule",
+      })
+
+      const config = TestConfig.layer({
+        get: () => Effect.succeed({ instructions: [".opencode/rules/typegen.md", ".opencode/rules/auth-sso.md"] }),
+      })
+
+      yield* Effect.gen(function* () {
+        const svc = yield* Instruction.Service
+        const paths = yield* svc.systemPaths()
+        expect(paths.has(path.join(projectTmp, ".opencode", "rules", "typegen.md"))).toBe(true)
+        expect(paths.has(path.join(projectTmp, ".opencode", "rules", "auth-sso.md"))).toBe(true)
+
+        const system = yield* svc.system()
+        expect(system).toContain(
+          `Instructions from: ${path.join(projectTmp, ".opencode", "rules", "typegen.md")}\n# Typegen rule\nbun run typegen`,
+        )
+        expect(system).toContain(
+          `Instructions from: ${path.join(projectTmp, ".opencode", "rules", "auth-sso.md")}\n# Auth SSO rule`,
+        )
+      }).pipe(provideInstance(projectTmp), provideInstruction({ home: projectTmp, config: projectTmp }, {}, config))
+    }),
+  )
+
+  it.live("does NOT inject a rule file that is not listed in config.instructions", () =>
+    Effect.gen(function* () {
+      const projectTmp = yield* tmpWithFiles({
+        ".opencode/rules/listed.md": "# Listed",
+        ".opencode/rules/unlisted.md": "# Unlisted — must not be injected",
+      })
+
+      const config = TestConfig.layer({
+        get: () => Effect.succeed({ instructions: [".opencode/rules/listed.md"] }),
+      })
+
+      yield* Effect.gen(function* () {
+        const svc = yield* Instruction.Service
+        const paths = yield* svc.systemPaths()
+        expect(paths.has(path.join(projectTmp, ".opencode", "rules", "listed.md"))).toBe(true)
+        // The load-bearing negative: an unreferenced rule file is invisible to the model.
+        expect(paths.has(path.join(projectTmp, ".opencode", "rules", "unlisted.md"))).toBe(false)
+
+        const system = yield* svc.system()
+        expect(system.some((s) => s.includes("unlisted.md"))).toBe(false)
+      }).pipe(provideInstance(projectTmp), provideInstruction({ home: projectTmp, config: projectTmp }, {}, config))
+    }),
+  )
+
+  it.live("resolves a glob pattern in config.instructions", () =>
+    Effect.gen(function* () {
+      const projectTmp = yield* tmpWithFiles({
+        ".opencode/rules/a.md": "# A",
+        ".opencode/rules/b.md": "# B",
+      })
+
+      const config = TestConfig.layer({
+        get: () => Effect.succeed({ instructions: [".opencode/rules/*.md"] }),
+      })
+
+      yield* Effect.gen(function* () {
+        const svc = yield* Instruction.Service
+        const paths = yield* svc.systemPaths()
+        expect(paths.has(path.join(projectTmp, ".opencode", "rules", "a.md"))).toBe(true)
+        expect(paths.has(path.join(projectTmp, ".opencode", "rules", "b.md"))).toBe(true)
+      }).pipe(provideInstance(projectTmp), provideInstruction({ home: projectTmp, config: projectTmp }, {}, config))
     }),
   )
 })

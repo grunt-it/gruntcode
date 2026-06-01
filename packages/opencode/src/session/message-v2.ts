@@ -275,6 +275,7 @@ export const ToolStateCompleted = Schema.Struct({
     compacted: Schema.optional(NonNegativeInt),
   }),
   attachments: Schema.optional(Schema.Array(FilePart)),
+  strippedOutput: Schema.optional(Schema.Any),
 }).annotate({ identifier: "ToolStateCompleted" })
 export type ToolStateCompleted = Types.DeepMutable<Schema.Schema.Type<typeof ToolStateCompleted>>
 
@@ -666,6 +667,13 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
 ) {
   const result: UIMessage[] = []
   const toolNames = new Set<string>()
+  // Track assistant messages whose turn was interrupted/errored but still kept
+  // for replay (e.g. AbortedError with partial content). Their signed thinking
+  // blocks may not match what the provider originally emitted, so if such a
+  // message ends up as the trailing assistant turn we must strip its reasoning
+  // before replay — otherwise Anthropic rejects the request with
+  // "`thinking` ... blocks in the latest assistant message cannot be modified".
+  const interruptedAssistantIds = new Set<string>()
   // Track media from tool results that need to be injected as user messages
   // for providers that don't support that media type in tool results.
   //
@@ -783,6 +791,24 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
         )
       ) {
         continue
+      }
+      // An errored assistant message that survives the filter above (an aborted
+      // turn with partial content) carries reasoning blocks that may no longer
+      // be byte-identical to the provider's original output. Remember it so we
+      // can strip its thinking if it becomes the trailing assistant turn.
+      if (msg.info.error) interruptedAssistantIds.add(msg.info.id)
+      // A turn with dangling tool calls (pending/running/interrupted) was also
+      // cut short mid-stream and is unsafe to replay with signed thinking.
+      if (
+        msg.parts.some(
+          (part) =>
+            part.type === "tool" &&
+            (part.state.status === "pending" ||
+              part.state.status === "running" ||
+              (part.state.status === "error" && part.state.metadata?.interrupted === true)),
+        )
+      ) {
+        interruptedAssistantIds.add(msg.info.id)
       }
       const assistantMessage: UIMessage = {
         id: msg.info.id,
@@ -932,6 +958,32 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
   }
 
   const tools = Object.fromEntries(Array.from(toolNames).map((toolName) => [toolName, { toModelOutput }]))
+
+  // Guard against the unreplayable "latest assistant message" state. Anthropic
+  // requires `thinking`/`redacted_thinking` blocks in the final assistant turn
+  // to be byte-for-byte identical to what it originally emitted. When that turn
+  // was interrupted mid-stream (aborted, or left with dangling tool calls), the
+  // persisted reasoning blocks can no longer satisfy that constraint, and every
+  // subsequent request fails with a 400 ("blocks in the latest assistant
+  // message cannot be modified"), wedging the session. Strip reasoning (and the
+  // now-orphaned empty separator text parts) from the trailing assistant turn
+  // in that case so the conversation can always be continued.
+  // The constraint only applies when the assistant turn is the FINAL message in
+  // the request (the one being continued). If a later user message follows, the
+  // assistant turn is historical and safe to replay verbatim.
+  const lastMessage = result[result.length - 1]
+  if (lastMessage && lastMessage.role === "assistant" && interruptedAssistantIds.has(lastMessage.id)) {
+    const hadReasoning = lastMessage.parts.some((part) => part.type === "reasoning")
+    if (hadReasoning) {
+      lastMessage.parts = lastMessage.parts.filter((part) => {
+        if (part.type === "reasoning") return false
+        // Drop the single-space separators we emit alongside signed reasoning;
+        // with the reasoning gone they are noise the provider would reject.
+        if (part.type === "text" && part.text === " ") return false
+        return true
+      })
+    }
+  }
 
   return yield* Effect.promise(() =>
     convertToModelMessages(

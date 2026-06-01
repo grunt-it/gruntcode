@@ -64,6 +64,22 @@ export function delay(attempt: number, error?: MessageV2.APIError) {
   return cap(Math.min(RETRY_INITIAL_DELAY * Math.pow(RETRY_BACKOFF_FACTOR, attempt - 1), RETRY_MAX_DELAY_NO_HEADERS))
 }
 
+// Anthropic rejects a request when the `thinking`/`redacted_thinking` blocks in
+// the latest assistant message differ from what it originally emitted. This
+// happens when a turn was interrupted mid-stream and the persisted reasoning
+// can no longer be replayed verbatim. The error is non-retryable as-is (the
+// same poisoned history would be resent), but it IS recoverable by stripping
+// the offending reasoning blocks before retrying — see SessionProcessor.
+export function isUnmodifiableThinkingError(error: Err): boolean {
+  if (!MessageV2.APIError.isInstance(error)) return false
+  if (error.data.statusCode !== 400) return false
+  const haystack = `${error.data.message ?? ""} ${error.data.responseBody ?? ""}`
+  return (
+    (haystack.includes("thinking") || haystack.includes("redacted_thinking")) &&
+    haystack.includes("cannot be modified")
+  )
+}
+
 export function retryable(error: Err, provider: string) {
   // context overflow errors should not be retried
   if (MessageV2.ContextOverflowError.isInstance(error)) return undefined

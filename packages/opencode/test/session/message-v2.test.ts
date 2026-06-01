@@ -985,41 +985,72 @@ describe("session.message-v2.toModelMessage", () => {
     expect(await MessageV2.toModelMessages(input, model)).toStrictEqual([])
   })
 
-  test("includes aborted assistant messages only when they have non-step-start/reasoning content", async () => {
-    const assistantID1 = "m-assistant-1"
-    const assistantID2 = "m-assistant-2"
-
+  test("strips reasoning from a trailing interrupted assistant message so it can be replayed", async () => {
+    // Regression for the wedge where Anthropic rejects a continued request with
+    // "`thinking` ... blocks in the latest assistant message cannot be modified"
+    // because an interrupted turn persisted reasoning that no longer matches the
+    // original response. The trailing interrupted turn must drop its reasoning.
+    const assistantID = "m-assistant-trailing"
     const aborted = new MessageV2.AbortedError({ message: "aborted" }).toObject() as MessageV2.Assistant["error"]
 
     const input: MessageV2.WithParts[] = [
       {
-        info: assistantInfo(assistantID1, "m-parent", aborted),
+        info: assistantInfo(assistantID, "m-parent", aborted),
         parts: [
           {
-            ...basePart(assistantID1, "a1"),
+            ...basePart(assistantID, "a1"),
             type: "reasoning",
             text: "thinking",
             time: { start: 0 },
           },
           {
-            ...basePart(assistantID1, "a2"),
+            ...basePart(assistantID, "a2"),
+            type: "text",
+            text: "partial answer",
+          },
+        ] as MessageV2.Part[],
+      },
+    ]
+
+    expect(await MessageV2.toModelMessages(input, model)).toStrictEqual([
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "partial answer" }],
+      },
+    ])
+  })
+
+  test("keeps reasoning on an interrupted assistant message that is NOT the trailing turn", async () => {
+    // Only the latest assistant message is subject to the unmodifiable-thinking
+    // constraint. A historical interrupted turn followed by a later user turn is
+    // safe to replay as-is, so its reasoning is preserved.
+    const assistantID = "m-assistant-historical"
+    const aborted = new MessageV2.AbortedError({ message: "aborted" }).toObject() as MessageV2.Assistant["error"]
+
+    const input: MessageV2.WithParts[] = [
+      {
+        info: assistantInfo(assistantID, "m-parent", aborted),
+        parts: [
+          {
+            ...basePart(assistantID, "a1"),
+            type: "reasoning",
+            text: "thinking",
+            time: { start: 0 },
+          },
+          {
+            ...basePart(assistantID, "a2"),
             type: "text",
             text: "partial answer",
           },
         ] as MessageV2.Part[],
       },
       {
-        info: assistantInfo(assistantID2, "m-parent", aborted),
+        info: userInfo("m-user-after"),
         parts: [
           {
-            ...basePart(assistantID2, "b1"),
-            type: "step-start",
-          },
-          {
-            ...basePart(assistantID2, "b2"),
-            type: "reasoning",
-            text: "thinking",
-            time: { start: 0 },
+            ...basePart("m-user-after", "u1"),
+            type: "text",
+            text: "continue please",
           },
         ] as MessageV2.Part[],
       },
@@ -1032,6 +1063,10 @@ describe("session.message-v2.toModelMessage", () => {
           { type: "reasoning", text: "thinking", providerOptions: undefined },
           { type: "text", text: "partial answer" },
         ],
+      },
+      {
+        role: "user",
+        content: [{ type: "text", text: "continue please" }],
       },
     ])
   })
