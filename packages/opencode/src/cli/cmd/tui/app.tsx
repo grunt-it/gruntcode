@@ -3,7 +3,8 @@ import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import * as Clipboard from "@tui/util/clipboard"
 import * as Selection from "@tui/util/selection"
 import * as TuiAudio from "@tui/util/audio"
-import { createCliRenderer, MouseButton, type CliRenderer, type CliRendererConfig } from "@opentui/core"
+import { createCliRenderer, MouseButton, TextAttributes, type CliRenderer, type CliRendererConfig } from "@opentui/core"
+import { recolorTicketRefs, type RecolorBufferLike } from "@tui/component/ticket-ref-scan"
 import { RouteProvider, useRoute } from "@tui/context/route"
 import {
   Switch,
@@ -482,6 +483,19 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   })
 
   const args = useArgs()
+  // #331: tint hivemind `#N` ticket refs in the link color so they stand out from base
+  // text. Refs render as plain `#N` inside <markdown> (a markdown link would leak its URL),
+  // so we recolor the painted cells in a per-frame post-process. Cheap single buffer scan;
+  // re-draws only the matched `#N` runs. Underlined to read as a link affordance.
+  onMount(() => {
+    const recolor = (buffer: unknown) => {
+      try {
+        recolorTicketRefs(buffer as RecolorBufferLike, theme.markdownLink, TextAttributes.UNDERLINE)
+      } catch {}
+    }
+    renderer.addPostProcessFn(recolor)
+  })
+
   onMount(() => {
     batch(() => {
       if (args.agent) local.agent.set(args.agent)

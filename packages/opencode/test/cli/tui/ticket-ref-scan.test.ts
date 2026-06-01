@@ -1,11 +1,35 @@
 import { expect, test, describe } from "bun:test"
-import { ticketIdAtCell, type FrameBufferLike } from "@/cli/cmd/tui/component/ticket-ref-scan"
+import {
+  ticketIdAtCell,
+  recolorTicketRefs,
+  type FrameBufferLike,
+  type RecolorBufferLike,
+} from "@/cli/cmd/tui/component/ticket-ref-scan"
 
 /** Build a single-row framebuffer from a string for hit-testing. */
 function fb(row: string, width = Math.max(row.length, 40)): FrameBufferLike {
   const char = new Uint32Array(width * 1)
   for (let x = 0; x < row.length; x++) char[x] = row.codePointAt(x)!
   return { width, height: 1, buffers: { char } }
+}
+
+/** Build a recolor-capable framebuffer that records drawText calls. */
+function recolorFb(row: string, width = Math.max(row.length, 40)): {
+  buf: RecolorBufferLike
+  draws: Array<{ text: string; x: number; y: number }>
+} {
+  const char = new Uint32Array(width * 1)
+  for (let x = 0; x < row.length; x++) char[x] = row.codePointAt(x)!
+  const draws: Array<{ text: string; x: number; y: number }> = []
+  const buf: RecolorBufferLike = {
+    width,
+    height: 1,
+    buffers: { char },
+    drawText(text, x, y) {
+      draws.push({ text, x, y })
+    },
+  }
+  return { buf, draws }
 }
 
 describe("ticketIdAtCell", () => {
@@ -72,5 +96,42 @@ describe("ticketIdAtCell", () => {
     const buf = fb("see #123456 here")
     // reads first 5 digits → 12345 (matches the <=5 digit rule)
     expect(ticketIdAtCell(buf, 4, 0)).toBe(12345)
+  })
+})
+
+describe("recolorTicketRefs", () => {
+  test("redraws each valid #N run, in position", () => {
+    const { buf, draws } = recolorFb("a #11 b #22 c")
+    recolorTicketRefs(buf, { r: 0, g: 0, b: 1, a: 1 })
+    expect(draws).toEqual([
+      { text: "#11", x: 2, y: 0 },
+      { text: "#22", x: 8, y: 0 },
+    ])
+  })
+
+  test("ignores #word, foo#12, ##12", () => {
+    const a = recolorFb("color #fff x")
+    recolorTicketRefs(a.buf, {})
+    expect(a.draws).toEqual([])
+
+    const b = recolorFb("foo#12 bar")
+    recolorTicketRefs(b.buf, {})
+    expect(b.draws).toEqual([])
+
+    const c = recolorFb("see ##12 x")
+    recolorTicketRefs(c.buf, {})
+    expect(c.draws).toEqual([])
+  })
+
+  test("ref at start of row", () => {
+    const { buf, draws } = recolorFb("#42 leads")
+    recolorTicketRefs(buf, {})
+    expect(draws).toEqual([{ text: "#42", x: 0, y: 0 }])
+  })
+
+  test("no refs → no draws", () => {
+    const { buf, draws } = recolorFb("plain prose here")
+    recolorTicketRefs(buf, {})
+    expect(draws).toEqual([])
   })
 })
