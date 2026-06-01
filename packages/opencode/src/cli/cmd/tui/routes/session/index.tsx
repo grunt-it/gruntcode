@@ -65,6 +65,9 @@ import { DialogForkFromTimeline } from "./dialog-fork-from-timeline"
 import { DialogSessionRename } from "../../component/dialog-session-rename"
 import { Sidebar } from "./sidebar"
 import { SubagentFooter } from "./subagent-footer.tsx"
+import open from "open"
+import { useHivemind } from "@tui/context/hivemind"
+import { ticketIdAtCell } from "@tui/component/ticket-ref-scan"
 import { LANGUAGE_EXTENSIONS } from "@/lsp/language"
 import parsers from "../../../../../../parsers-config.ts"
 import * as Clipboard from "../../util/clipboard"
@@ -1656,21 +1659,54 @@ function ReasoningHeader(props: {
   )
 }
 
-const HIVEMIND_TICKET_RE = /(^|[^\w/#])#(\d{1,5})\b/g
+const HIVEMIND_UI_BASE = process.env.HIVEMIND_UI_BASE ?? "https://hivemind.grunt.si"
 
 function TextPart(props: { last: boolean; part: TextPart; message: AssistantMessage }) {
   const ctx = use()
   const { theme, syntax } = useTheme()
-  const content = createMemo(() => {
-    const text = props.part.text.trim()
-    if (!text) return text
-    return text.replace(HIVEMIND_TICKET_RE, (match, prefix, id) => {
-      return `${prefix}[#${id}](https://hivemind.grunt.si/tasks/${id})`
-    })
-  })
+  const hive = useHivemind()
+  const renderer = useRenderer()
+  // Render the whole message as ONE <markdown> block — the only structure that streams
+  // without flicker (a single renderable the markdown engine diffs incrementally), keeps
+  // full markdown formatting, and wraps correctly (#250). Refs render as PLAIN `#N`
+  // (NO `[#N](url)` rewrite): build-verified that a markdown link leaks its URL in this
+  // app, and an inline `<a>` can't live inside <markdown>. Plain `#N` is the only clean,
+  // flicker-free, wrap-correct form.
+  //
+  // Hover + click (#331) are done by reading the renderer's FRAMEBUFFER at the cursor:
+  // ticketIdAtCell inspects the characters actually painted on screen and returns the id
+  // of the `#N` token under the cursor — pixel-accurate, no column estimation, no extra
+  // renderables. Returns null off-ref → the hover card closes.
+  const content = createMemo(() => props.part.text.trim())
+
+  const idAt = (event: { x: number; y: number }): number | null => {
+    const buf = (renderer as unknown as { currentRenderBuffer?: { width: number; height: number; buffers: { char: Uint32Array } } })
+      .currentRenderBuffer
+    if (!buf) return null
+    return ticketIdAtCell(buf, event.x, event.y)
+  }
+
   return (
     <Show when={content()}>
-      <box id={"text-" + props.part.id} paddingLeft={3} marginTop={1} flexShrink={0}>
+      <box
+        id={"text-" + props.part.id}
+        paddingLeft={3}
+        marginTop={1}
+        flexShrink={0}
+        onMouseMove={(event: { x: number; y: number }) => {
+          const id = idAt(event)
+          if (id == null) {
+            hive.triggerHoverLeave()
+            return
+          }
+          hive.triggerHoverEnter(id, event.x, event.y)
+        }}
+        onMouseOut={() => hive.triggerHoverLeave()}
+        onMouseUp={(event: { x: number; y: number }) => {
+          const id = idAt(event)
+          if (id != null) open(`${HIVEMIND_UI_BASE}/tasks/${id}`).catch(() => {})
+        }}
+      >
         <markdown
           syntaxStyle={syntax()}
           streaming={true}

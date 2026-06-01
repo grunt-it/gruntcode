@@ -1,21 +1,21 @@
-// grunt-it: clickable hivemind ticket-ref (#229) component for assistant chat (#233).
+// grunt-it: clickable hivemind ticket-ref (#229) component for assistant chat (#233, #331).
 //
-// **Inline-flowing rendering** (#250): TicketRef renders as an `<a>` (LinkRenderable)
-// — an OpenTUI TextNode that flows inline within a parent `<text>` block. Previously
-// this was a top-level `<text>` widget, which when interleaved with `<markdown>` text
-// segments under `<box flexDirection="row" flexWrap="wrap">` caused refs to land on
-// the wrong line: each segment became its own flex item and the flex-wrap engine
-// reordered them per-item instead of flowing per-character. As an inline TextNode
-// the ref takes part in TextRenderable's character-level wrap math.
+// **Inline-flowing rendering** (#250): TicketRef renders as an `<a>` (LinkRenderable) —
+// an OpenTUI TextNode that flows inline within a parent `<text>` block. A top-level
+// `<text>` widget per ref broke text-wrap (#250): each became its own flex item and the
+// flex-wrap engine reordered them per-item instead of flowing per-character. As an inline
+// TextNode the ref takes part in TextRenderable's character-level wrap math.
 //
-// **OSC-8 hyperlink** via the `href` prop: the terminal emulator (iTerm, Ghostty,
-// Kitty, modern Terminal.app) renders the ref as a real clickable hyperlink that
-// opens hivemind-ui at /tasks/<id>. ⌘-click in iTerm; plain click in some others.
-// Trade-off (accepted for #250): we lose the previously-shipped React hover-card
-// preview because TextNodes (`<a>`/`<span>`) don't accept their own mouse-event
-// listeners — they're part of the parent `<text>`'s render. A separate ticket can
-// reintroduce a hover preview via a different rendering strategy (e.g. a coordinated
-// overlay anchored to the `<text>`'s cursor position).
+// **Clean label + OSC-8 hyperlink** via the `href` prop (build-verified #331): the ref
+// renders as just `#<id>` (the URL is NOT shown — it's carried as OSC-8 hyperlink
+// metadata, unlike a markdown `[#N](url)` which leaks the literal URL into the visible
+// text). Terminals that support OSC-8 (iTerm2, Ghostty, Kitty, modern Terminal.app)
+// render the ref as a real hyperlink with native hover-highlight + click-to-open
+// (⌘-click in iTerm; plain click in some others) pointing at hivemind-ui /tasks/<id>.
+//
+// Why native OSC-8 instead of a custom hover-card overlay: the terminal owns the exact
+// rendered geometry of the link, so hover-highlight + click are always pixel-accurate —
+// no JS-side cursor→character position estimation (which drifted badly when attempted).
 
 import { useTheme } from "../context/theme"
 
