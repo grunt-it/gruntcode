@@ -65,9 +65,8 @@ import { DialogForkFromTimeline } from "./dialog-fork-from-timeline"
 import { DialogSessionRename } from "../../component/dialog-session-rename"
 import { Sidebar } from "./sidebar"
 import { SubagentFooter } from "./subagent-footer.tsx"
-import open from "open"
-import { useHivemind } from "@tui/context/hivemind"
-import { scanTicketRefs, resolveRefAt } from "@tui/component/ticket-ref-scan"
+import { TicketRef } from "@tui/component/ticket-ref"
+import { splitTextIntoBlocks, splitOnTicketRefs } from "@tui/component/ticket-ref-scan"
 import { LANGUAGE_EXTENSIONS } from "@/lsp/language"
 import parsers from "../../../../../../parsers-config.ts"
 import * as Clipboard from "../../util/clipboard"
@@ -1659,79 +1658,48 @@ function ReasoningHeader(props: {
   )
 }
 
-const HIVEMIND_UI_BASE = process.env.HIVEMIND_UI_BASE ?? "https://hivemind.grunt.si"
-
 function TextPart(props: { last: boolean; part: TextPart; message: AssistantMessage }) {
   const ctx = use()
   const { theme, syntax } = useTheme()
-  const hive = useHivemind()
-  // Source text (trimmed). We render this DIRECTLY through <markdown> — NO `#N`→link
-  // rewrite (#331). Build-tested: this app renders markdown without tree-sitter, so a
-  // `[#N](url)` link leaks the literal URL into the visible text (the bug PR #24
-  // reintroduced + Nik reported). Plain `#N` is the only leak-free form. Hover preview +
-  // click-to-open are layered on via the mouse overlay below, not via markdown links.
   const content = createMemo(() => props.part.text.trim())
-  // Ref positions in the visible text — drives the line-based hover resolver (#331).
-  const refs = createMemo(() => scanTicketRefs(content()))
-
-  // The wrapping box renderable, captured so the mouse handlers can read its on-screen
-  // geometry (screenX/Y + width) to translate absolute mouse coords → local row/col.
-  let boxEl: BoxRenderable | undefined
-
-  // Resolve which ticket ref (if any) the cursor is over, from an absolute mouse event.
-  // Returns null when there are no refs or the geometry isn't ready.
-  const refIdAt = (event: { x: number; y: number }): number | null => {
-    const list = refs()
-    if (list.length === 0 || !boxEl) return null
-    // paddingLeft=3 shifts the rendered markdown right by 3 cols; subtract it so the
-    // local col aligns with the text content's column 0.
-    const localCol = event.x - boxEl.screenX - 3
-    const localRow = event.y - boxEl.screenY
-    const width = Math.max(1, boxEl.width - 3)
-    return resolveRefAt(content(), list, localRow, localCol, width)
-  }
+  // Split the message into paragraph blocks (#331). Blocks WITHOUT a ticket ref render as
+  // full <markdown> (formatting preserved). Blocks WITH a ref render as a single inline
+  // <text> of <span> prose + <TicketRef> (<a href>) refs — clean labels, OSC-8 hyperlinks
+  // with native hover-highlight + click, and correct character-level wrap (#250). The
+  // tradeoff (OpenTUI inline-flow vs markdown): a ref-bearing paragraph loses inline
+  // markdown formatting (bold/italic/code) — but only that paragraph, nothing else.
+  const blocks = createMemo(() => splitTextIntoBlocks(content()))
 
   return (
     <Show when={content()}>
-      <box
-        id={"text-" + props.part.id}
-        paddingLeft={3}
-        marginTop={1}
-        flexShrink={0}
-        ref={(el: BoxRenderable) => (boxEl = el)}
-        onMouseMove={(event: { x: number; y: number }) => {
-          // No refs in this message → nothing to preview; let any open card close.
-          if (refs().length === 0) return
-          const id = refIdAt(event)
-          if (id == null) {
-            hive.triggerHoverLeave()
-            return
-          }
-          hive.triggerHoverEnter(id, event.x, event.y)
-        }}
-        onMouseOut={() => {
-          if (refs().length === 0) return
-          hive.triggerHoverLeave()
-        }}
-        onMouseUp={(event: { x: number; y: number }) => {
-          // Click-to-open: we lose the terminal's native OSC-8 ⌘-click when rendering refs
-          // as plain text, so open hivemind-ui ourselves for the ref under the cursor.
-          if (refs().length === 0) return
-          const id = refIdAt(event)
-          if (id == null) return
-          open(`${HIVEMIND_UI_BASE}/tasks/${id}`).catch(() => {})
-        }}
-      >
-        <markdown
-          syntaxStyle={syntax()}
-          streaming={true}
-          internalBlockMode="top-level"
-          content={content()}
-          tableOptions={{ style: "grid" }}
-          conceal={ctx.conceal()}
-          fg={theme.markdownText}
-          bg={theme.background}
-        />
+      <box id={"text-" + props.part.id} paddingLeft={3} marginTop={1} flexShrink={0} flexDirection="column">
+        <For each={blocks()}>
+          {(block) => (
+            <Show
+              when={block.hasRef}
+              fallback={
+                <Show when={block.text !== ""} fallback={<text> </text>}>
+                  <markdown
+                    syntaxStyle={syntax()}
+                    streaming={true}
+                    internalBlockMode="top-level"
+                    content={block.text}
+                    tableOptions={{ style: "grid" }}
+                    conceal={ctx.conceal()}
+                    fg={theme.markdownText}
+                    bg={theme.background}
+                  />
+                </Show>
+              }
+            >
+              <text fg={theme.markdownText} bg={theme.background}>
+                <For each={splitOnTicketRefs(block.text)}>
+                  {(seg) => (seg.kind === "text" ? <span>{seg.text}</span> : <TicketRef id={seg.id} />)}
+                </For>
+              </text>
+            </Show>
+          )}
+        </For>
       </box>
     </Show>
   )
