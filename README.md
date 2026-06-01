@@ -1,3 +1,16 @@
+# gruntcode
+
+> **gruntcode is a [grunt-it](https://github.com/grunt-it) soft-fork of [opencode](https://github.com/anomalyco/opencode).**
+> It layers hivemind-native autonomous-coordination behavior + a few hivemind-aware TUI enhancements on top of opencode.
+> **→ See [GRUNTCODE.md](./GRUNTCODE.md) for what's different, why the fork exists, install, and the rebase workflow.**
+>
+> Install: `brew install grunt-it/tap/gruntcode`
+>
+> Everything below this line is the upstream opencode README, kept as-is. If you don't need hivemind
+> integration, use [opencode](https://opencode.ai) directly — it's the same binary minus our patches.
+
+---
+
 <p align="center">
   <a href="https://opencode.ai">
     <picture>
