@@ -85,3 +85,57 @@ function isWordChar(c: number): boolean {
     c === 0x5f
   )
 }
+
+/** Minimal slice of OptimizedBuffer needed to recolor cells in a post-process pass. */
+export interface RecolorBufferLike extends FrameBufferLike {
+  drawText(text: string, x: number, y: number, fg: unknown, bg?: unknown, attributes?: number): void
+}
+
+/**
+ * Find every valid `#N` ticket-ref token painted in the framebuffer and re-draw it in the
+ * given foreground color (so refs stand out from base text). Runs as a per-frame
+ * post-process (#331): cheap single linear scan; re-drawing only the matched `#N` runs.
+ *
+ * `fg` is passed straight to `buffer.drawText` (an RGBA in practice — kept `unknown` here
+ * so this module needs no @opentui/core import). `attributes` lets the caller add e.g.
+ * underline. Uses the SAME boundary rules as ticketIdAtCell so it never tints `foo#12`,
+ * `##12`, or `#fff`.
+ */
+export function recolorTicketRefs(
+  buf: RecolorBufferLike,
+  fg: unknown,
+  attributes?: number,
+): void {
+  for (let y = 0; y < buf.height; y++) {
+    let x = 0
+    while (x < buf.width) {
+      if (codeAt(buf, x, y) !== HASH) {
+        x++
+        continue
+      }
+      // Boundary before '#': reject when preceded by word char, '/', or '#'.
+      const before = codeAt(buf, x - 1, y)
+      if (before !== 0 && (before === HASH || before === 0x2f || isWordChar(before))) {
+        x++
+        continue
+      }
+      // Count digits after '#'.
+      let count = 0
+      let j = x + 1
+      while (count < 5 && isDigit(codeAt(buf, j, y))) {
+        j++
+        count++
+      }
+      if (count === 0) {
+        x++
+        continue
+      }
+      // Re-draw the `#<digits>` run in the ref color. Read the chars back from the buffer
+      // so we reproduce exactly what's painted.
+      let token = "#"
+      for (let k = x + 1; k < j; k++) token += String.fromCodePoint(codeAt(buf, k, y))
+      buf.drawText(token, x, y, fg, undefined, attributes)
+      x = j
+    }
+  }
+}
