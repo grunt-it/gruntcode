@@ -42,40 +42,73 @@ describe("nearestRefId", () => {
   })
 })
 
-describe("resolveRefAt (line-based)", () => {
-  test("single ref on hovered line resolves regardless of column drift", () => {
+describe("resolveRefAt (strict proximity gate, Option b)", () => {
+  test("cursor directly on the ref resolves it", () => {
     const text = "line zero no ref\nline one mentions #777 ticket\nline two no ref"
     const refs = scanTicketRefs(text)
-    // row 1 (second line), any column → must resolve to 777
-    expect(resolveRefAt(text, refs, 1, 0, 80)).toBe(777)
-    expect(resolveRefAt(text, refs, 1, 40, 80)).toBe(777)
+    // "#777" on line 1 starts at visible col 18 ("line one mentions " = 18 chars).
+    expect(resolveRefAt(text, refs, 1, 18, 80)).toBe(777)
+    expect(resolveRefAt(text, refs, 1, 20, 80)).toBe(777) // mid-ref
   })
 
-  test("ref-free line falls back to globally nearest by line start", () => {
+  test("cursor within tolerance of the ref resolves it", () => {
+    const text = "line one mentions #777 ticket"
+    const refs = scanTicketRefs(text)
+    // ref visible span is cols 18..21 (inclusive of #,7,7,7). Within ±2 cols still hits.
+    expect(resolveRefAt(text, refs, 0, 16, 80)).toBe(777) // 2 left of start
+    expect(resolveRefAt(text, refs, 0, 23, 80)).toBe(777) // 2 right of end
+  })
+
+  test("cursor far on the SAME line → null (no snapping, card closes)", () => {
+    const text = "line one mentions #777 ticket and lots more text here padding"
+    const refs = scanTicketRefs(text)
+    expect(resolveRefAt(text, refs, 0, 0, 80)).toBeNull() // far left
+    expect(resolveRefAt(text, refs, 0, 50, 80)).toBeNull() // far right
+  })
+
+  test("cursor on a ref-free line → null (no cross-line snapping)", () => {
     const text = "intro #100 here\njust prose with no ref at all"
     const refs = scanTicketRefs(text)
-    // hovering the ref-free second line still resolves to the only ref
-    expect(resolveRefAt(text, refs, 1, 5, 80)).toBe(100)
+    expect(resolveRefAt(text, refs, 1, 5, 80)).toBeNull()
+    expect(resolveRefAt(text, refs, 1, 20, 80)).toBeNull()
   })
 
-  test("multi-ref line picks nearest by column", () => {
+  test("multi-ref line: resolves the one under the cursor, null when between/away", () => {
     const text = "tickets #11 and #99 on one line"
     const refs = scanTicketRefs(text)
-    // "#11" at col 8, "#99" at col 16. Cursor near start → 11; near end → 99.
+    // "#11" visible cols 8..10; "#99" visible cols 16..18.
     expect(resolveRefAt(text, refs, 0, 8, 80)).toBe(11)
     expect(resolveRefAt(text, refs, 0, 17, 80)).toBe(99)
+    // Between them (col 13, >2 from either) → null.
+    expect(resolveRefAt(text, refs, 0, 13, 80)).toBeNull()
   })
 
-  test("wrapped long line: row maps into the right logical line", () => {
-    // First logical line is 100 chars wide → wraps to 2 visual rows at width 60.
-    const longA = "A".repeat(100)
-    const text = `${longA}\nsecond line has #555`
+  test("list-item ref: concealed '- ' prefix shifts visible column left", () => {
+    // "- see #42 now": raw '#' at index 6, but '- ' (2 chars) is concealed →
+    // visible col of '#42' is 4.
+    const text = "- see #42 now"
     const refs = scanTicketRefs(text)
-    // Visual rows: 0,1 = first logical line (no ref); row 2 = second line (#555).
-    expect(resolveRefAt(text, refs, 2, 0, 60)).toBe(555)
+    expect(resolveRefAt(text, refs, 0, 4, 80)).toBe(42) // visible position
+    expect(resolveRefAt(text, refs, 0, 6, 80)).toBe(42) // raw position still within TOL
+  })
+
+  test("wrapped ref-bearing line stays hoverable on its 2nd visual row", () => {
+    // Line: 70 chars of prose then '#555' near the end → wraps at width 60.
+    const prefix = "x".repeat(66) + " "
+    const text = `${prefix}#555` // length 71, wraps to 2 rows at width 60
+    const refs = scanTicketRefs(text)
+    // '#555' visible col = 67 → on 2nd visual row (row 1), col 67-60=7.
+    expect(resolveRefAt(text, refs, 1, 7, 60)).toBe(555)
+    // far left on row 0 → null
+    expect(resolveRefAt(text, refs, 0, 0, 60)).toBeNull()
   })
 
   test("no refs → null", () => {
     expect(resolveRefAt("no refs here", [], 0, 0, 80)).toBeNull()
+  })
+
+  test("invalid width → null", () => {
+    const refs = scanTicketRefs("see #5")
+    expect(resolveRefAt("see #5", refs, 0, 0, 0)).toBeNull()
   })
 })

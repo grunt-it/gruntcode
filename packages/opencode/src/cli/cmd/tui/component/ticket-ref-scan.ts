@@ -96,22 +96,36 @@ export function nearestRefId(refs: ScannedRef[], idx: number): number | null {
   return best ? best.id : null
 }
 
+/** Columns of slack around a ref's rendered span within which a hover/click still counts.
+ *  Strict-but-forgiving (Option b): the cursor must be ON or within TOL columns of the
+ *  actual `#N` — otherwise resolveRefAt returns null and the hover card closes. Small
+ *  enough that moving clearly away (or to blank space / another line) dismisses the card
+ *  instead of snapping to a neighbor; large enough to absorb the wrap/conceal column
+ *  estimate error. Tunable. */
+export const HOVER_COL_TOLERANCE = 2
+
 /**
- * Resolve which ticket ref the cursor is nearest, given the cursor's LOCAL position
- * inside the rendered block (row + col, 0-based, relative to the block's top-left) and
- * the block's content width in columns.
+ * Resolve which ticket ref the cursor is over, with a STRICT proximity gate (#331,
+ * Option b). Given the cursor's LOCAL position inside the rendered block (row + col,
+ * 0-based, relative to the block's content top-left) and the block's content width in
+ * columns, return a ref id ONLY when the cursor is on/near an actual `#N`; otherwise
+ * return null so the caller closes the hover card.
  *
- * Strategy — robust over precise (Model A):
- * 1. Walk the source text line-by-line, estimating how many WRAPPED visual rows each
- *    source line occupies at the given width (ceil(lineDisplayWidth / width), min 1).
- *    This mirrors how the markdown renderable word-wraps each logical line. It's an
- *    estimate (concealment + markdown block markers shift columns), but it's monotonic
- *    and good enough to land on the right source line in the common case.
- * 2. Find the source line under `row`. Collect refs whose offsets fall on that line.
- *    - If the line has refs → return nearest by column within the line.
- *    - If not → fall back to the globally-nearest ref by character index (so hovering a
- *      ref-free continuation row of a wrapped paragraph still resolves to that
- *      paragraph's ref). Returns null only when the whole block has no refs.
+ * This is the fix for two reported bugs:
+ *  - card never closed when moving the cursor away (it snapped to the nearest ref);
+ *  - moving far on a line just switched to a neighbor ref.
+ * Both came from an unconditional "nearest ref" return. Now we gate on distance.
+ *
+ * Coordinate handling: ref offsets from scanTicketRefs are in RAW source characters, but
+ * the cursor column is in VISIBLE/rendered columns. On a line with leading markdown
+ * markers (`- `, `## `, `> `) those markers are concealed, so a ref's visible column is
+ * left-shifted from its raw offset. We compute each on-line ref's VISIBLE column range
+ * and gate the cursor's visible column against it — so the gate is accurate even on
+ * list items / headings.
+ *
+ * Vertical: the cursor's row is mapped to a logical source line via per-line wrapped-row
+ * estimation; a ref on a wrapped line stays hoverable across its visual rows. If the
+ * resolved line has no ref, returns null (no cross-line snapping).
  *
  * Never throws; clamps out-of-range row/col.
  */
@@ -123,16 +137,17 @@ export function resolveRefAt(
   width: number,
 ): number | null {
   if (refs.length === 0) return null
-  if (width <= 0) return nearestRefId(refs, 0)
+  if (width <= 0 || !Number.isFinite(width)) return null
 
   const lines = text.split("\n")
-  // Precompute the [start,end) source-char range of each source line.
-  const lineRanges: Array<{ start: number; end: number; rows: number }> = []
+  // Per source line: raw [start,end) char range + how many wrapped visual rows it spans.
+  const lineRanges: Array<{ start: number; end: number; rows: number; prefixLen: number }> = []
   let offset = 0
   for (const line of lines) {
-    const visibleWidth = displayWidth(line)
-    const rows = Math.max(1, Math.ceil(visibleWidth / width))
-    lineRanges.push({ start: offset, end: offset + line.length, rows })
+    const prefixLen = concealedPrefixLen(line)
+    const visibleWidth = Math.max(0, line.length - prefixLen)
+    const rows = Math.max(1, Math.ceil(Math.max(1, visibleWidth) / width))
+    lineRanges.push({ start: offset, end: offset + line.length, rows, prefixLen })
     offset += line.length + 1 // +1 for the consumed "\n"
   }
 
@@ -149,30 +164,40 @@ export function resolveRefAt(
   }
 
   const range = lineRanges[lineIdx]
-  // Refs on this source line.
+  // Refs whose `#` sits on this source line.
   const onLine = refs.filter((r) => r.start >= range.start && r.start < range.end)
-  if (onLine.length > 0) {
-    // Cursor's estimated char index within this line: the row-within-line * width + col.
-    const rowsBefore = lineRanges.slice(0, lineIdx).reduce((s, r) => s + r.rows, 0)
-    const rowWithinLine = Math.max(0, clampedRow - rowsBefore)
-    const colInLine = rowWithinLine * width + Math.max(0, col)
-    const idx = range.start + colInLine
-    return nearestRefId(onLine, idx)
-  }
+  if (onLine.length === 0) return null // ref-free line → no hover (card closes)
 
-  // No ref on the hovered line → globally nearest by the line's start index.
-  return nearestRefId(refs, range.start)
+  // Cursor's VISIBLE column within the wrapped line: account for the wrapped row offset.
+  const rowsBefore = lineRanges.slice(0, lineIdx).reduce((s, r) => s + r.rows, 0)
+  const rowWithinLine = Math.max(0, clampedRow - rowsBefore)
+  const cursorVisibleCol = rowWithinLine * width + Math.max(0, col)
+
+  // For each on-line ref, compute its VISIBLE column span (raw offset minus the concealed
+  // leading-marker length on this line) and gate against the tolerance band.
+  let best: number | null = null
+  let bestDist = Infinity
+  for (const r of onLine) {
+    const visStart = r.start - range.start - range.prefixLen
+    const visEnd = r.end - range.start - range.prefixLen // exclusive
+    if (visEnd <= 0) continue
+    let dist: number
+    if (cursorVisibleCol < visStart) dist = visStart - cursorVisibleCol
+    else if (cursorVisibleCol >= visEnd) dist = cursorVisibleCol - (visEnd - 1)
+    else dist = 0 // directly on the ref
+    if (dist <= HOVER_COL_TOLERANCE && dist < bestDist) {
+      bestDist = dist
+      best = r.id
+    }
+  }
+  return best
 }
 
-/** Approximate display width of a string in terminal columns. Treats most code points as
- *  width-1; this is sufficient for ref position estimation (we don't need grapheme-perfect
- *  width, just a monotonic estimate to pick the right source line). */
-function displayWidth(s: string): number {
-  // Strip the heaviest markdown markers that get concealed so width estimate tracks the
-  // visible render a little better (headings/list bullets/emphasis). Conservative.
-  const visible = s
-    .replace(/^\s*#{1,6}\s+/, "") // heading marker
-    .replace(/^\s*[-*+]\s+/, "") // list bullet
-    .replace(/[*_`]/g, "") // emphasis / code markers
-  return visible.length
+/** Length of the concealed leading markdown marker on a line (heading `#`+space, list
+ *  bullet `- `/`* `/`+ `, blockquote `> `, plus surrounding indent). These markers are
+ *  hidden by the renderer in conceal mode, so the visible text starts after them — which
+ *  shifts every ref's visible column left by this many chars. */
+function concealedPrefixLen(line: string): number {
+  const m = line.match(/^(\s*(?:#{1,6}\s+|[-*+]\s+|>\s+)?)/)
+  return m ? m[1].length : 0
 }
