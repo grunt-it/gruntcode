@@ -31,6 +31,7 @@ import { MCP } from "@/mcp"
 import { Feedback } from "./feedback"
 import { HivemindLoopHook } from "./hivemind-loop-hook"
 import { Usage, type LLMEvent } from "@opencode-ai/llm"
+import { isUntrustedTool, wrapUntrustedContent } from "./untrusted"
 
 const DOOM_LOOP_THRESHOLD = 3
 const CROSS_TURN_DOOM_LOOP_THRESHOLD = 3
@@ -536,12 +537,14 @@ export const layer = Layer.effect(
             )
             const omitted = normalized.filter(Exit.isFailure).length
             const attachments = normalized.filter(Exit.isSuccess).map((item) => item.value)
+            const rawText = omitted === 0 ? rawOutput.output : `${rawOutput.output}\n\n[${omitted} image${omitted === 1 ? "" : "s"} omitted: could not be resized below the image size limit.]`
+            const toolNameForUntrusted = toolCall?.part?.tool
+            const wrappedText = toolNameForUntrusted && isUntrustedTool(toolNameForUntrusted)
+              ? wrapUntrustedContent(toolNameForUntrusted, rawText)
+              : rawText
             const output = {
               ...rawOutput,
-              output:
-                omitted === 0
-                  ? rawOutput.output
-                  : `${rawOutput.output}\n\n[${omitted} image${omitted === 1 ? "" : "s"} omitted: could not be resized below the image size limit.]`,
+              output: wrappedText,
               attachments: attachments.length ? attachments : undefined,
             }
             // TODO(v2): Temporary dual-write while migrating session messages to v2 events.

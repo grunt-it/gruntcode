@@ -106,6 +106,12 @@ Usage notes:
   - It is very helpful if you write a clear, concise description of what this command does in 5-10 words.
   - If the output exceeds ${limits.maxLines} lines or ${limits.maxBytes} bytes, it will be truncated and the full output will be written to a file. You can use Read with offset/limit to read specific sections or Grep to search the full content. Do NOT use \`head\`, \`tail\`, or other truncation commands to limit output; the full output will already be captured to a file for more precise searching.
 
+  - For LONG-running commands (pip install, builds, model downloads, ffmpeg, anything taking >20s), make the FIRST line \`#!bg\` to run it in the BACKGROUND. You get a job id back immediately and are automatically re-invoked with the full output when it finishes — so you never block the chat waiting. Example:
+    \`\`\`bash
+    #!bg
+    pip install openai-whisper
+    \`\`\`
+
   - Avoid using Bash with the \`find\`, \`grep\`, \`cat\`, \`head\`, \`tail\`, \`sed\`, \`awk\`, or \`echo\` commands, unless explicitly instructed or when these commands are truly necessary for the task. Instead, always prefer using the dedicated tools for these commands:
     - File search: Use Glob (NOT find or ls)
     - Content search: Use Grep (NOT grep or rg)

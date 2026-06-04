@@ -1,4 +1,4 @@
-import { Effect, Stream } from "effect"
+import { Clock, Effect, Stream } from "effect"
 import os from "os"
 import { createWriteStream } from "node:fs"
 import * as Tool from "./tool"
@@ -22,6 +22,7 @@ import { ChildProcess } from "effect/unstable/process"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
 import { ShellPrompt, type Parameters } from "./shell/prompt"
 import { BashArity } from "@/permission/arity"
+import { BackgroundJob } from "@/background/job"
 
 export { Parameters } from "./shell/prompt"
 
@@ -340,7 +341,7 @@ export const ShellTool = Tool.define(
     const trunc = yield* Truncate.Service
     const plugin = yield* Plugin.Service
     const flags = yield* RuntimeFlags.Service
-    const defaultTimeoutMs = flags.bashDefaultTimeoutMs ?? 2 * 60 * 1000
+    const defaultTimeoutMs = flags.bashDefaultTimeoutMs ?? 60 * 60 * 1000 // 1 hour default (was 2 min — pip installs, builds, etc. need room)
 
     const cygpath = Effect.fn("ShellTool.cygpath")(function* (shell: string, text: string) {
       const lines = yield* spawner
@@ -421,7 +422,23 @@ export const ShellTool = Tool.define(
       }
     })
 
-    const run = Effect.fn("ShellTool.run")(function* (
+    const BG_MARKERS = new Set(["#!bg", "#bg", "# background", "#background", "@background"])
+
+function hasBgMarker(command: string): { isBg: boolean; command: string } {
+  const lines = command.split("\n")
+  let i = 0
+  while (i < lines.length && !lines[i].trim()) i++
+  if (i < lines.length && BG_MARKERS.has(lines[i].trim().toLowerCase())) {
+    lines.splice(i, 1)
+    return { isBg: true, command: lines.join("\n").trim() }
+  }
+  return { isBg: false, command }
+}
+
+const PROGRESS_INTERVAL_MS = 2000
+const PROGRESS_TAIL_LINES = 12
+
+const run = Effect.fn("ShellTool.run")(function* (
       input: {
         shell: string
         command: string
@@ -530,6 +547,26 @@ export const ShellTool = Tool.define(
             }),
           )
 
+          // Progress emitter — pushes periodic "tail" metadata while process runs
+          yield* Effect.forkScoped(
+            Effect.gen(function* () {
+              yield* Effect.sleep(`${PROGRESS_INTERVAL_MS} millis`)
+              while (true) {
+                const tail = list
+                  .slice(-PROGRESS_TAIL_LINES)
+                  .map((c) => c.text)
+                  .join("")
+                yield* ctx.metadata({
+                  metadata: {
+                    output: tail || last,
+                    description: input.description,
+                  },
+                }).pipe(Effect.ignore)
+                yield* Effect.sleep(`${PROGRESS_INTERVAL_MS} millis`)
+              }
+            }),
+          )
+
           const abort = Effect.callback<void>((resume) => {
             if (ctx.abort.aborted) return resume(Effect.void)
             const handler = () => resume(Effect.void)
@@ -609,6 +646,43 @@ export const ShellTool = Tool.define(
           parameters: prompt.parameters,
           execute: (params: Parameters, ctx: Tool.Context) =>
             Effect.gen(function* () {
+              // Check for #!bg background marker
+              const { isBg, command } = hasBgMarker(params.command)
+              if (isBg) {
+                const bg = yield* BackgroundJob.Service
+                const info = yield* bg.start({
+                  type: "bash",
+                  title: params.description,
+                  metadata: { cwd: params.workdir, timeout: params.timeout },
+                  run: Effect.gen(function* () {
+                    const instanceCtx = yield* InstanceState.context
+                    const cwd = params.workdir
+                      ? yield* resolvePath(params.workdir, instanceCtx.directory, shell)
+                      : instanceCtx.directory
+                    const result = yield* run(
+                      {
+                        shell,
+                        command,
+                        cwd,
+                        env: yield* shellEnv(ctx, cwd),
+                        timeout: params.timeout ?? defaultTimeoutMs,
+                        description: params.description,
+                      },
+                      ctx,
+                    )
+                    return result.output
+                  }),
+                })
+                return {
+                  title: params.description,
+                  metadata: {
+                    output: `Started background job \`${info.id}\`. It is running detached. You will be automatically re-invoked with its full output when it finishes. Continue with other work, or end your turn now and resume when the result arrives.`,
+                    description: params.description,
+                  },
+                  output: `Background job started: ${info.id}\n\nStarted background job \`${info.id}\`. It is running detached. You will be automatically re-invoked with its full output when it finishes. Continue with other work, or end your turn now and resume when the result arrives.`,
+                }
+              }
+
               const instanceCtx = yield* InstanceState.context
               const cwd = params.workdir
                 ? yield* resolvePath(params.workdir, instanceCtx.directory, shell)
@@ -632,7 +706,7 @@ export const ShellTool = Tool.define(
               return yield* run(
                 {
                   shell,
-                  command: params.command,
+                  command,
                   cwd,
                   env: yield* shellEnv(ctx, cwd),
                   timeout,

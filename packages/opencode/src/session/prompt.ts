@@ -49,6 +49,7 @@ import { SessionRunState } from "./run-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Feedback } from "./feedback"
+import { UNTRUSTED_CONTEXT_POLICY } from "./untrusted"
 import { SessionEvent } from "@opencode-ai/core/session-event"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -1447,7 +1448,7 @@ export const layer = Layer.effect(
                 preview: feedbackMsgs[0]?.slice(0, 80),
               })
             }
-            const system = [...env, ...instructions, ...feedbackMsgs, ...(skills ? [skills] : [])]
+            const system = [UNTRUSTED_CONTEXT_POLICY, ...env, ...instructions, ...feedbackMsgs, ...(skills ? [skills] : [])]
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
             const result = yield* handle.process({

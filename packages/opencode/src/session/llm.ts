@@ -13,6 +13,7 @@ import { Config } from "@/config/config"
 import type { Agent } from "@/agent/agent"
 import type { MessageV2 } from "./message-v2"
 import { Plugin } from "@/plugin"
+import { parseToolCalls } from "@/tool/parser"
 import { Permission } from "@/permission"
 import { PermissionID } from "@/permission/schema"
 import { Bus } from "@/bus"
@@ -277,8 +278,10 @@ const live: Layer.Layer<
           },
           async experimental_repairToolCall(failed) {
             const lower = failed.toolCall.toolName.toLowerCase()
+
+            // Try lowercase match
             if (lower !== failed.toolCall.toolName && prepared.tools[lower]) {
-              l.info("repairing tool call", {
+              l.info("repairing tool call (lowercase)", {
                 tool: failed.toolCall.toolName,
                 repaired: lower,
               })
@@ -287,6 +290,44 @@ const live: Layer.Layer<
                 toolName: lower,
               }
             }
+
+            // Try partial name matching — some models prefix or suffix tool names
+            for (const name of Object.keys(prepared.tools)) {
+              if (name.includes(lower) || lower.includes(name)) {
+                l.info("repairing tool call (partial match)", {
+                  tool: failed.toolCall.toolName,
+                  repaired: name,
+                })
+                return {
+                  ...failed.toolCall,
+                  toolName: name,
+                }
+              }
+            }
+
+            // Try parsing the failed tool call text as alternative format
+            const parseInput = typeof failed.toolCall.args === "string"
+              ? failed.toolCall.args
+              : JSON.stringify(failed.toolCall.args ?? {})
+            if (parseInput && parseInput !== "{}") {
+              const parsed = parseToolCalls(parseInput)
+              if (parsed.length > 0) {
+                for (const p of parsed) {
+                  if (prepared.tools[p.toolName]) {
+                    l.info("repairing tool call (parsed from alternative format)", {
+                      tool: failed.toolCall.toolName,
+                      repaired: p.toolName,
+                    })
+                    return {
+                      ...failed.toolCall,
+                      toolName: p.toolName,
+                      args: p.args,
+                    }
+                  }
+                }
+              }
+            }
+
             return {
               ...failed.toolCall,
               input: JSON.stringify({
