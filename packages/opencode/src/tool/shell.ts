@@ -26,6 +26,21 @@ import { BackgroundJob } from "@/background/job"
 
 export { Parameters } from "./shell/prompt"
 
+export const BG_MARKERS = new Set<string>(["#!bg", "#bg", "# background", "#background", "@background"])
+
+export type BgMarkerResult = { isBg: boolean; command: string }
+
+export function hasBgMarker(command: string): BgMarkerResult {
+  const lines = command.split("\n")
+  let i = 0
+  while (i < lines.length && !lines[i].trim()) i++
+  if (i < lines.length && BG_MARKERS.has(lines[i].trim().toLowerCase())) {
+    lines.splice(i, 1)
+    return { isBg: true, command: lines.join("\n").trim() }
+  }
+  return { isBg: false, command }
+}
+
 const MAX_METADATA_LENGTH = 30_000
 const CWD = new Set(["cd", "chdir", "popd", "pushd", "push-location", "set-location"])
 const FILES = new Set([
@@ -422,20 +437,7 @@ export const ShellTool = Tool.define(
       }
     })
 
-    const BG_MARKERS = new Set(["#!bg", "#bg", "# background", "#background", "@background"])
-
-function hasBgMarker(command: string): { isBg: boolean; command: string } {
-  const lines = command.split("\n")
-  let i = 0
-  while (i < lines.length && !lines[i].trim()) i++
-  if (i < lines.length && BG_MARKERS.has(lines[i].trim().toLowerCase())) {
-    lines.splice(i, 1)
-    return { isBg: true, command: lines.join("\n").trim() }
-  }
-  return { isBg: false, command }
-}
-
-const PROGRESS_INTERVAL_MS = 2000
+    const PROGRESS_INTERVAL_MS = 2000
 const PROGRESS_TAIL_LINES = 12
 
 const run = Effect.fn("ShellTool.run")(function* (

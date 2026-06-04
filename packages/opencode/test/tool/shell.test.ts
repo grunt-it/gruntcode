@@ -5,7 +5,7 @@ import os from "os"
 import path from "path"
 import { Config } from "@/config/config"
 import { Shell } from "../../src/shell/shell"
-import { ShellTool } from "../../src/tool/shell"
+import { ShellTool, hasBgMarker, BG_MARKERS } from "../../src/tool/shell"
 import { Filesystem } from "@/util/filesystem"
 import { provideInstance, tmpdirScoped } from "../fixture/fixture"
 import type { Permission } from "../../src/permission"
@@ -18,6 +18,7 @@ import { Plugin } from "../../src/plugin"
 import { testEffect } from "../lib/effect"
 import { Tool } from "@/tool/tool"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { BackgroundJob } from "@/background/job"
 
 const shellLayer = Layer.mergeAll(
   CrossSpawnSpawner.defaultLayer,
@@ -27,6 +28,7 @@ const shellLayer = Layer.mergeAll(
   Config.defaultLayer,
   Agent.defaultLayer,
   RuntimeFlags.defaultLayer,
+  BackgroundJob.defaultLayer,
 )
 const it = testEffect(shellLayer)
 type ShellTestServices =
@@ -1156,6 +1158,98 @@ describe("tool.shell abort", () => {
       }),
     ),
   )
+})
+
+describe("tool.shell bg marker", () => {
+  describe("hasBgMarker", () => {
+    const cases: Array<{ input: string; expectedBg: boolean; expectedCommand: string; label: string }> = [
+      {
+        label: "#!bg prefix",
+        input: "#!bg\npip install foo",
+        expectedBg: true,
+        expectedCommand: "pip install foo",
+      },
+      {
+        label: "#bg prefix",
+        input: "#bg\nmake build",
+        expectedBg: true,
+        expectedCommand: "make build",
+      },
+      {
+        label: "@background prefix",
+        input: "@background\nnpm run dev",
+        expectedBg: true,
+        expectedCommand: "npm run dev",
+      },
+      {
+        label: "no marker",
+        input: "ls -la",
+        expectedBg: false,
+        expectedCommand: "ls -la",
+      },
+      {
+        label: "marker with leading blank lines",
+        input: "\n\n#!bg\n  echo hi",
+        expectedBg: true,
+        expectedCommand: "echo hi",
+      },
+      {
+        label: "marker not at start",
+        input: "echo one\n#!bg\necho two",
+        expectedBg: false,
+        expectedCommand: "echo one\n#!bg\necho two",
+      },
+    ]
+
+    for (const c of cases) {
+      it.live(c.label, () =>
+        Effect.gen(function* () {
+          const result = hasBgMarker(c.input)
+          expect(result.isBg).toBe(c.expectedBg)
+          expect(result.command).toBe(c.expectedCommand)
+        }),
+      )
+    }
+  })
+
+  it.live("bg marker runs as background job", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const result = yield* run(
+          {
+            command: "#!bg\necho background job test",
+            description: "Test bg marker",
+          },
+          {
+            ...ctx,
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        expect(result.output).toInclude("Started background job")
+        expect(result.output).toInclude("job_")
+      }),
+    ),
+  )
+
+  it.live("regular command still executes directly", () =>
+    runIn(
+      projectRoot,
+      Effect.gen(function* () {
+        const result = yield* run(
+          {
+            command: "echo direct execution",
+            description: "Test no bg marker",
+          },
+          ctx,
+        )
+        expect(result.metadata.exit).toBe(0)
+        expect(result.output).toInclude("direct execution")
+      }),
+    ),
+  )
+
 })
 
 describe("tool.shell truncation", () => {
