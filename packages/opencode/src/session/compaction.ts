@@ -393,15 +393,11 @@ export const layer = Layer.effect(
           }
         }
       }
-      // 4. Default tiering: non-anthropic session models compact via Sonnet.
-      // Fall back to the session model if Sonnet is unavailable (catches typed
-      // ModelNotFoundError AND provider defects so compaction never hard-fails).
-      if (input.sessionModel.providerID !== "anthropic") {
-        return yield* provider
-          .getModel("anthropic" as ProviderID, "claude-sonnet-4-6" as ModelID)
-          .pipe(Effect.catchCause(() => Effect.succeed(input.sessionModel)))
-      }
-      // 5. Anthropic session models compact themselves
+      // 4. Default: compact with the user's selected session model. No hardcoded
+      // model — a large-context driver (e.g. a 1M-token model) should not be forced
+      // through a different model for summarization. Users who want a dedicated
+      // compaction model opt in via tiers 1-3 (agent.model / compaction.model /
+      // compaction.model_overrides).
       return input.sessionModel
     })
 
