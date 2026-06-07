@@ -361,43 +361,12 @@ export const layer = Layer.effect(
     })
 
     const selectCompactionModel = Effect.fn("SessionCompaction.selectCompactionModel")(function* (input: {
-      cfg: Config.Info
       sessionModel: Provider.Model
       agent: Agent.Info
     }) {
-      // 1. Explicit agent override (highest priority, preserves existing behavior)
       if (input.agent.model) {
         return yield* provider.getModel(input.agent.model.providerID, input.agent.model.modelID).pipe(Effect.orDie)
       }
-      // 2. Explicit compaction.model in config
-      if (input.cfg.compaction?.model) {
-        const [providerID, modelID] = input.cfg.compaction.model.split("/")
-        if (providerID && modelID) {
-          return yield* provider
-            .getModel(providerID as ProviderID, modelID as ModelID)
-            .pipe(Effect.catchCause(() => Effect.succeed(input.sessionModel)))
-        }
-      }
-      // 3. Glob-pattern model overrides keyed on session model
-      if (input.cfg.compaction?.model_overrides) {
-        const sessionModelKey = `${input.sessionModel.providerID}/${input.sessionModel.id}`
-        for (const [pattern, overrideModel] of Object.entries(input.cfg.compaction.model_overrides)) {
-          const regex = new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*")}$`)
-          if (regex.test(sessionModelKey)) {
-            const [providerID, modelID] = overrideModel.split("/")
-            if (providerID && modelID) {
-              return yield* provider
-                .getModel(providerID as ProviderID, modelID as ModelID)
-                .pipe(Effect.catchCause(() => Effect.succeed(input.sessionModel)))
-            }
-          }
-        }
-      }
-      // 4. Default: compact with the user's selected session model. No hardcoded
-      // model — a large-context driver (e.g. a 1M-token model) should not be forced
-      // through a different model for summarization. Users who want a dedicated
-      // compaction model opt in via tiers 1-3 (agent.model / compaction.model /
-      // compaction.model_overrides).
       return input.sessionModel
     })
 
@@ -528,7 +497,6 @@ export const layer = Layer.effect(
       const agent = yield* agents.get("compaction")
       const cfg = yield* config.get()
       const model = yield* selectCompactionModel({
-        cfg,
         sessionModel: yield* provider.getModel(userMessage.model.providerID, userMessage.model.modelID).pipe(Effect.orDie),
         agent,
       })

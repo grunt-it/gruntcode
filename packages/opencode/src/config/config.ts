@@ -273,13 +273,6 @@ export const Info = Schema.Struct({
       prune: Schema.optional(Schema.Boolean).annotate({
         description: "Enable pruning of old tool outputs (default: true)",
       }),
-      model: Schema.optional(ConfigModelID).annotate({
-        description: "Model to use for compaction in the format provider/model (e.g., anthropic/claude-sonnet-4-6)",
-      }),
-      model_overrides: Schema.optional(Schema.Record(Schema.String, ConfigModelID)).annotate({
-        description:
-          "Glob-pattern overrides for compaction model selection (e.g., {'opencode/claude-opus*': 'anthropic/claude-sonnet-4-6'})",
-      }),
       tail_turns: Schema.optional(NonNegativeInt).annotate({
         description:
           "Number of recent user turns, including their following assistant/tool responses, to keep verbatim during compaction (default: 2)",
