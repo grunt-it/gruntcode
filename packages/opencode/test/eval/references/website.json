@@ -1,0 +1,19 @@
+{
+  "scenario": "website",
+  "model": "deepseek-v4-flash",
+  "recordedAt": "2026-06-06T12:10:58.850Z",
+  "runs": 1,
+  "metrics": {
+    "buildOkRate": 1,
+    "avgFilesChanged": 0,
+    "avgCoverage": 0.8888888888888888,
+    "avgConventionScore": 0,
+    "avgAnnotationsPerFile": 0,
+    "avgTokensInput": 85188,
+    "avgTokensOutput": 18022,
+    "avgWallClockMs": 299632,
+    "stddevWallClockMs": 0,
+    "brandOkRate": 0,
+    "brandCustomColorsRate": 1
+  }
+}
