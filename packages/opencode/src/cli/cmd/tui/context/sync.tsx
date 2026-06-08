@@ -520,6 +520,10 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         },
         async sync(sessionID: string) {
           if (fullSyncedSessions.has(sessionID)) return
+          await this.forceSync(sessionID)
+          fullSyncedSessions.add(sessionID)
+        },
+        async forceSync(sessionID: string) {
           const [session, messages, todo, diff] = await Promise.all([
             sdk.client.session.get({ sessionID }, { throwOnError: true }),
             sdk.client.session.messages({ sessionID, limit: 100 }),
@@ -530,24 +534,32 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             produce((draft) => {
               const match = Binary.search(draft.session, sessionID, (s) => s.id)
               if (match.found) draft.session[match.index] = session.data!
-              if (!match.found) draft.session.splice(match.index, 0, session.data!)
+              if (!match.found) {
+                draft.session.splice(match.index, 0, session.data!)
+              }
               draft.todo[sessionID] = todo.data ?? []
-              const infos: (typeof draft.message)[string] = []
+              const existingInfos = draft.message[sessionID]
+              const existingIds = new Set(existingInfos?.map((i: any) => i.id) ?? [])
               for (const message of messages.data ?? []) {
-                infos.push(message.info)
+                if (!existingIds.has(message.info.id)) {
+                  if (!existingInfos) {
+                    draft.message[sessionID] = [message.info]
+                  } else {
+                    existingInfos.push(message.info)
+                  }
+                }
                 draft.part[message.info.id] = message.parts
               }
-              draft.message[sessionID] = infos
-              // Repair: if the last assistant message was interrupted (power loss, crash),
-              // mark it completed so the session appears cleanly idle on resume
-              const last = draft.message[sessionID]?.at(-1)
-              if (last?.role === "assistant" && !last.time.completed) {
-                last.time.completed = Date.now()
+              const mArr = draft.message[sessionID]
+              if (mArr) {
+                const last = mArr[mArr.length - 1]
+                if (last?.role === "assistant" && !last.time.completed) {
+                  last.time.completed = Date.now()
+                }
               }
               draft.session_diff[sessionID] = diff.data ?? []
             }),
           )
-          fullSyncedSessions.add(sessionID)
         },
       },
       bootstrap,

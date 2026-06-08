@@ -7,6 +7,7 @@ import {
   For,
   Match,
   on,
+  onCleanup,
   onMount,
   Show,
   Switch,
@@ -270,10 +271,6 @@ export function Session() {
       if (result.data.workspaceID !== previousWorkspace) {
         project.workspace.set(result.data.workspaceID)
 
-        // Sync all the data for this workspace. Note that this
-        // workspace may not exist anymore which is why this is not
-        // fatal. If it doesn't we still want to show the session
-        // (which will be non-interactive)
         try {
           await sync.bootstrap({ fatal: false })
         } catch {}
@@ -290,6 +287,15 @@ export function Session() {
       })
       navigate({ type: "home" })
     })
+  })
+
+  createEffect(() => {
+    const sessionID = route.sessionID
+    if (!sessionID) return
+    const id = setInterval(() => {
+      sync.session.forceSync(sessionID).catch(() => {})
+    }, 3000)
+    onCleanup(() => clearInterval(id))
   })
 
   let lastSwitch: string | undefined = undefined
