@@ -112,7 +112,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     const sdk = useSDK()
     const kv = useKV()
 
-    const fullSyncedSessions = new Map<string, number>()
+    const fullSyncedSessions = new Set<string>()
 
     function sessionListQuery(): { scope?: "project"; path?: string } {
       if (!kv.get("session_directory_filter_enabled", true)) return { scope: "project" }
@@ -518,9 +518,8 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           if (last.role === "user") return "working"
           return last.time.completed ? "idle" : "working"
         },
-        async sync(sessionID: string, opts?: { force?: boolean }) {
-          if (!opts?.force && fullSyncedSessions.has(sessionID)) return
-          fullSyncedSessions.set(sessionID, Date.now())
+        async sync(sessionID: string) {
+          if (fullSyncedSessions.has(sessionID)) return
           const [session, messages, todo, diff] = await Promise.all([
             sdk.client.session.get({ sessionID }, { throwOnError: true }),
             sdk.client.session.messages({ sessionID, limit: 100 }),
@@ -539,9 +538,16 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
                 draft.part[message.info.id] = message.parts
               }
               draft.message[sessionID] = infos
+              // Repair: if the last assistant message was interrupted (power loss, crash),
+              // mark it completed so the session appears cleanly idle on resume
+              const last = draft.message[sessionID]?.at(-1)
+              if (last?.role === "assistant" && !last.time.completed) {
+                last.time.completed = Date.now()
+              }
               draft.session_diff[sessionID] = diff.data ?? []
             }),
           )
+          fullSyncedSessions.add(sessionID)
         },
       },
       bootstrap,

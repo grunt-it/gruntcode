@@ -1300,10 +1300,7 @@ export function Session() {
                     session_id={route.sessionID}
                     visible={visible()}
                     disabled={disabled()}
-                    on_submit={() => {
-                      toBottom()
-                      sync.session.sync(route.sessionID, { force: true }).catch(() => {})
-                    }}
+                    on_submit={toBottom}
                     ref={bind}
                   >
                     <Prompt
@@ -1312,7 +1309,6 @@ export function Session() {
                       disabled={disabled()}
                       onSubmit={() => {
                         toBottom()
-                        sync.session.sync(route.sessionID, { force: true }).catch(() => {})
                       }}
                       sessionID={route.sessionID}
                       right={<TuiPluginRuntime.Slot name="session_prompt_right" session_id={route.sessionID} />}
