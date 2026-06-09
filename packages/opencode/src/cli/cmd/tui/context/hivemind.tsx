@@ -19,7 +19,21 @@ import { getPeerID } from "@opencode-ai/core/util/opencode-process"
 
 const DEFAULT_API = "https://hivemind.grunt.si"
 const POLL_INTERVAL_MS = 2000
-const AUTH_TOKEN = process.env.MCP_HTTP_TOKEN_SECRET || ""
+const SHARED_SECRET = process.env.MCP_HTTP_TOKEN_SECRET || ""
+
+// Sign a short-lived HMAC-SHA256 bearer token matching the hivemind MCP auth scheme.
+// Token shape: <base64url(payload)>.<base64url(hmac)>
+// Payload: { iss: "hivemind-mcp-local", sub: peerId, scope: "agent", iat, exp }
+async function signToken(peerId: string): Promise<string> {
+  if (!SHARED_SECRET) return ""
+  const now = Math.floor(Date.now() / 1000)
+  const claims = { iss: "hivemind-mcp-local", sub: peerId, scope: "agent", iat: now, exp: now + 30 }
+  const payloadB64 = btoa(JSON.stringify(claims)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(SHARED_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"])
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payloadB64))
+  const sigB64 = btoa(String.fromCharCode(...new Uint8Array(sig))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
+  return `${payloadB64}.${sigB64}`
+}
 
 // Cached + dedup'd ticket-detail fetches used by TicketRef hover (#233). Lives in the
 // context (not in the component) so multiple TicketRefs share a single fetch per id and
@@ -138,7 +152,8 @@ export const { use: useHivemind, provider: HivemindProvider } = createSimpleCont
         const controller = new AbortController()
         const t = setTimeout(() => controller.abort(), 1500)
         const headers: Record<string, string> = {}
-        if (AUTH_TOKEN) headers["Authorization"] = `Bearer ${AUTH_TOKEN}`
+        const token = await signToken(peerId || "tui")
+        if (token) headers["Authorization"] = `Bearer ${token}`
         const res = await fetch(`${apiBase}${path}`, { signal: controller.signal, headers })
         clearTimeout(t)
         if (!res.ok) return null
@@ -270,7 +285,8 @@ export const { use: useHivemind, provider: HivemindProvider } = createSimpleCont
           const controller = new AbortController()
           const t = setTimeout(() => controller.abort(), 1500)
           const headers: Record<string, string> = {}
-          if (AUTH_TOKEN) headers["Authorization"] = `Bearer ${AUTH_TOKEN}`
+          const token = await signToken("tui")
+          if (token) headers["Authorization"] = `Bearer ${token}`
           const res = await fetch(`${apiBase}/api/tasks/${id}`, { signal: controller.signal, headers })
           clearTimeout(t)
           if (!res.ok) {
