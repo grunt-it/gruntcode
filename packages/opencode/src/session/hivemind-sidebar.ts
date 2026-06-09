@@ -97,13 +97,9 @@ async function doPoll(client: unknown, peerId: string) {
 }
 
 export const startPoll = Effect.fn("HivemindSidebar.startPoll")(function* (mcp: MCP.Interface, peerId: string) {
-  const client = yield* findClient(mcp)
-  if (!client) {
-    yield* Effect.logDebug("hivemind-sidebar: no hivemind MCP client found — skipping")
-    return
-  }
-
   const poll = Effect.fnUntraced(function* () {
+    const client = yield* findClient(mcp)
+    if (!client) return
     yield* Effect.promise(() => doPoll(client, peerId))
   })
 
