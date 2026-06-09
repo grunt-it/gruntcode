@@ -17,10 +17,16 @@ import { createSignal, onCleanup, onMount } from "solid-js"
 import { createStore } from "solid-js/store"
 import { getPeerID } from "@opencode-ai/core/util/opencode-process"
 import { createHmac } from "crypto"
+import { appendFileSync } from "fs"
 
 const DEFAULT_API = "https://hivemind.grunt.si"
 const POLL_INTERVAL_MS = 2000
 const SHARED_SECRET = process.env.MCP_HTTP_TOKEN_SECRET || ""
+const LOGFILE = "/tmp/hivemind-tui.log"
+
+function logError(msg: string, err?: unknown) {
+  try { appendFileSync(LOGFILE, `${new Date().toISOString()} ${msg}${err ? ": " + ((err as Error)?.message || String(err)) : ""}\n`) } catch {}
+}
 
 // Sign a short-lived HMAC-SHA256 bearer token matching the hivemind MCP auth scheme.
 // Token shape: <base64url(payload)>.<base64url(hmac)>
@@ -149,7 +155,7 @@ export const { use: useHivemind, provider: HivemindProvider } = createSimpleCont
     async function fetchJson<T>(path: string): Promise<T | null> {
       try {
         const controller = new AbortController()
-        const t = setTimeout(() => controller.abort(), 1500)
+        const t = setTimeout(() => controller.abort(), 5000)
         const headers: Record<string, string> = {}
         const token = signToken(peerId || "tui")
         if (token) headers["Authorization"] = `Bearer ${token}`
@@ -157,7 +163,8 @@ export const { use: useHivemind, provider: HivemindProvider } = createSimpleCont
         clearTimeout(t)
         if (!res.ok) return null
         return (await res.json()) as T
-      } catch {
+      } catch (e) {
+        logError("fetchJson failed", e)
         return null
       }
     }
@@ -282,7 +289,7 @@ export const { use: useHivemind, provider: HivemindProvider } = createSimpleCont
       const p = (async () => {
         try {
           const controller = new AbortController()
-          const t = setTimeout(() => controller.abort(), 1500)
+          const t = setTimeout(() => controller.abort(), 5000)
           const headers: Record<string, string> = {}
           const token = signToken("tui")
           if (token) headers["Authorization"] = `Bearer ${token}`
@@ -296,7 +303,8 @@ export const { use: useHivemind, provider: HivemindProvider } = createSimpleCont
           const task = (body as { task?: TicketDetail }).task ?? (body as TicketDetail)
           ticketCache.set(id, task ?? null)
           return task ?? null
-        } catch {
+        } catch (e) {
+          logError("fetchTicket failed", e)
           ticketCache.set(id, null)
           return null
         } finally {
