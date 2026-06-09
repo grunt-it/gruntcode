@@ -118,8 +118,7 @@ export const layer = Layer.effect(
     // Start hivemind sidebar poll fiber (non-fatal — silently degrades if MCP unavailable).
     const peerID = getPeerID()
     if (Option.isSome(mcpOption) && peerID) {
-      yield* HivemindSidebar.startPoll(Option.getOrThrow(mcpOption), peerID).pipe(
-        Effect.forkScoped,
+      yield* HivemindSidebar.startPoll(Option.getOrThrow(mcpOption), peerID, scope).pipe(
         Effect.ignore,
       )
     }

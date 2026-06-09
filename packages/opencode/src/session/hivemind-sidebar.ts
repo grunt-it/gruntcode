@@ -1,8 +1,5 @@
 import { Effect, Schedule, Scope } from "effect"
 import { MCP } from "@/mcp"
-import * as Log from "@opencode-ai/core/util/log"
-
-const log = Log.create({ service: "session.hivemind-sidebar" })
 
 export type HivePeer = {
   id: string; engine: string
@@ -96,7 +93,7 @@ async function doPoll(client: unknown, peerId: string) {
   }
 }
 
-export const startPoll = Effect.fn("HivemindSidebar.startPoll")(function* (mcp: MCP.Interface, peerId: string) {
+export const startPoll = Effect.fn("HivemindSidebar.startPoll")(function* (mcp: MCP.Interface, peerId: string, scope: Scope.Scope) {
   const poll = Effect.fnUntraced(function* () {
     const client = yield* findClient(mcp)
     if (!client) return
@@ -104,7 +101,7 @@ export const startPoll = Effect.fn("HivemindSidebar.startPoll")(function* (mcp: 
   })
 
   yield* Effect.repeat(poll(), Schedule.fixed(2000)).pipe(
-    Effect.forkScoped,
+    Effect.forkIn(scope),
   )
 })
 
