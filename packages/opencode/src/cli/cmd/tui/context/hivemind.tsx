@@ -17,8 +17,9 @@ import { createSignal, onCleanup, onMount } from "solid-js"
 import { createStore } from "solid-js/store"
 import { getPeerID } from "@opencode-ai/core/util/opencode-process"
 
-const DEFAULT_API = "http://127.0.0.1:7890"
+const DEFAULT_API = "https://hivemind.grunt.si"
 const POLL_INTERVAL_MS = 2000
+const AUTH_TOKEN = process.env.MCP_HTTP_TOKEN_SECRET || ""
 
 // Cached + dedup'd ticket-detail fetches used by TicketRef hover (#233). Lives in the
 // context (not in the component) so multiple TicketRefs share a single fetch per id and
@@ -136,7 +137,9 @@ export const { use: useHivemind, provider: HivemindProvider } = createSimpleCont
       try {
         const controller = new AbortController()
         const t = setTimeout(() => controller.abort(), 1500)
-        const res = await fetch(`${apiBase}${path}`, { signal: controller.signal })
+        const headers: Record<string, string> = {}
+        if (AUTH_TOKEN) headers["Authorization"] = `Bearer ${AUTH_TOKEN}`
+        const res = await fetch(`${apiBase}${path}`, { signal: controller.signal, headers })
         clearTimeout(t)
         if (!res.ok) return null
         return (await res.json()) as T
@@ -266,7 +269,9 @@ export const { use: useHivemind, provider: HivemindProvider } = createSimpleCont
         try {
           const controller = new AbortController()
           const t = setTimeout(() => controller.abort(), 1500)
-          const res = await fetch(`${apiBase}/api/tasks/${id}`, { signal: controller.signal })
+          const headers: Record<string, string> = {}
+          if (AUTH_TOKEN) headers["Authorization"] = `Bearer ${AUTH_TOKEN}`
+          const res = await fetch(`${apiBase}/api/tasks/${id}`, { signal: controller.signal, headers })
           clearTimeout(t)
           if (!res.ok) {
             ticketCache.set(id, null)
