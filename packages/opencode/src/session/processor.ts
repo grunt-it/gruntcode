@@ -1,5 +1,5 @@
 import { Image } from "@/image/image"
-import { Cause, Deferred, Effect, Exit, Layer, Context, Scope, Schema } from "effect"
+import { Cause, Deferred, Effect, Exit, Layer, Context, Scope, Schema, Option } from "effect"
 import * as Stream from "effect/Stream"
 import { Agent } from "@/agent/agent"
 import { Bus } from "@/bus"
@@ -30,6 +30,8 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { MCP } from "@/mcp"
 import { Feedback } from "./feedback"
 import { HivemindLoopHook } from "./hivemind-loop-hook"
+import { HivemindSidebar } from "./hivemind-sidebar"
+import { getPeerID } from "@opencode-ai/core/util/opencode-process"
 import { Usage, type LLMEvent } from "@opencode-ai/llm"
 
 const DOOM_LOOP_THRESHOLD = 3
@@ -112,6 +114,15 @@ export const layer = Layer.effect(
     // no-op for the hook when MCP isn't in context, instead of forcing every test layer to
     // provide an unused service.
     const mcpOption = yield* Effect.serviceOption(MCP.Service)
+
+    // Start hivemind sidebar poll fiber (non-fatal — silently degrades if MCP unavailable).
+    const peerID = getPeerID()
+    if (Option.isSome(mcpOption) && peerID) {
+      yield* HivemindSidebar.startPoll(Option.getOrThrow(mcpOption), peerID).pipe(
+        Effect.forkScoped,
+        Effect.ignore,
+      )
+    }
 
     const create = Effect.fn("SessionProcessor.create")(function* (input: Input) {
       // Pre-capture snapshot before the LLM stream starts. The AI SDK
