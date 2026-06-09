@@ -36,6 +36,14 @@ let cached: HiveState = {
 
 export function getCached(): HiveState { return cached }
 
+export function resetForTest(): void {
+  cached = {
+    apiOnline: false, lastFetchAt: 0, self: null,
+    peers: [], inbox: [],
+    board: { open: 0, claimed: 0, stale: 0, mineClaimedCount: 0, highPrioMine: 0 },
+  }
+}
+
 function parseContent(res: any): any {
   try { return JSON.parse(res?.content?.[0]?.text || "null") } catch { return null }
 }
