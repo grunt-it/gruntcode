@@ -3,6 +3,52 @@
 - **`staging`** — pre-release builds (`gruntcode-staging`).
 - **`dev`** — cutting-edge builds (`gruntcode-dev`). Default branch.
 
+## Building binaries locally
+
+Each branch auto-detects its channel from `git branch --show-current` via `@opencode-ai/script`.
+The version format is `0.0.0-<channel>-<YYYYMMDDHHmm>`.
+
+```sh
+# From packages/opencode — build for current platform only, no embedded web UI:
+bun run script/build.ts --single --skip-embed-web-ui
+```
+
+Output lands in `dist/opencode-darwin-arm64/bin/opencode` (or the platform equivalent).
+
+### Install to ~/.opencode/bin
+
+After building, copy and **re-sign** — macOS invalidates the ad-hoc Bun signature on `cp`:
+
+```sh
+cp dist/opencode-darwin-arm64/bin/opencode ~/.opencode/bin/gruntcode       # main
+cp dist/opencode-darwin-arm64/bin/opencode ~/.opencode/bin/gruntcode-staging  # staging
+cp dist/opencode-darwin-arm64/bin/opencode ~/.opencode/bin/gruntcode-dev     # dev
+
+codesign --force --sign - ~/.opencode/bin/gruntcode
+codesign --force --sign - ~/.opencode/bin/gruntcode-staging
+codesign --force --sign - ~/.opencode/bin/gruntcode-dev
+```
+
+Without the `codesign` step the binary will hang / exit 137 (SIGKILL) on macOS.
+
+### Full rebuild all 3 tiers
+
+```sh
+cd packages/opencode
+for branch in main staging dev; do
+  git checkout "$branch"
+  bun run script/build.ts --single --skip-embed-web-ui
+  case "$branch" in
+    main)    name=gruntcode ;;
+    staging) name=gruntcode-staging ;;
+    dev)     name=gruntcode-dev ;;
+  esac
+  cp dist/opencode-darwin-arm64/bin/opencode ~/.opencode/bin/"$name"
+  codesign --force --sign - ~/.opencode/bin/"$name"
+  echo "$name: $(~/.opencode/bin/"$name" --version)"
+done
+```
+
 ## Commits and PR Titles
 
 Use conventional commit-style messages and PR titles: `type(scope): summary`.
