@@ -98,6 +98,10 @@ jobs:
           # Rename to gruntcode + place at top-level for packaging
           cp "$binary" gruntcode
           chmod +x gruntcode
+          # macOS invalidates the ad-hoc Bun signature on cp — re-sign or the binary hangs (exit 137)
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            codesign --force --sign - gruntcode
+          fi
           ./gruntcode --version
           echo "binary=$(pwd)/gruntcode" >> $GITHUB_OUTPUT
 
