@@ -1,6 +1,7 @@
 - To regenerate the JavaScript SDK, run `./packages/sdk/js/script/build.ts`.
-- The default branch in this repo is `dev`.
-- Local `main` ref may not exist; use `dev` or `origin/dev` for diffs.
+- **`main`** — production builds (`gruntcode`). Stable release.
+- **`staging`** — pre-release builds (`gruntcode-staging`).
+- **`dev`** — cutting-edge builds (`gruntcode-dev`). Default branch.
 
 ## Commits and PR Titles
 

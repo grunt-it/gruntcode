@@ -15,6 +15,7 @@ name: grunt-release
 
 on:
   push:
+    branches: [main, staging, dev]
     tags:
       - "v*-grunt.*"
   workflow_dispatch:
@@ -52,13 +53,21 @@ jobs:
       - name: bun install
         run: bun install --frozen-lockfile
 
-      - name: Compute version from tag
+      - name: Compute version + channel
         id: version
         run: |
-          TAG="${{ inputs.tag || github.ref_name }}"
-          VERSION="${TAG#v}"
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            TAG="${{ inputs.tag || github.ref_name }}"
+            VERSION="${TAG#v}"
+            CHANNEL="latest"
+          else
+            BRANCH="${{ github.ref_name }}"
+            VERSION="0.0.0-$BRANCH-$(date -u +%Y%m%d%H%M)"
+            CHANNEL="$BRANCH"
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Building gruntcode version: $VERSION (from tag $TAG)"
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "Building gruntcode $VERSION ($CHANNEL channel from ${{ github.ref_type }} ${{ github.ref_name }})" >&2
 
       - name: Build single-target binary
         working-directory: packages/opencode
@@ -67,7 +76,7 @@ jobs:
           # real release tag (e.g. 1.15.10-grunt.7) instead of `0.0.0-<branch>-<timestamp>`.
           OPENCODE_VERSION: ${{ steps.version.outputs.version }}
           OPENCODE_RELEASE: "1"
-          OPENCODE_CHANNEL: "latest"
+          OPENCODE_CHANNEL: ${{ steps.version.outputs.channel }}
         run: bun script/build.ts --single --skip-embed-web-ui
         # --single → only build for the current host's platform+arch
         # --skip-embed-web-ui → drop the embedded web UI (we're a TUI-focused fork; cuts binary size + build time)
@@ -96,7 +105,8 @@ jobs:
           tar -czf ${{ matrix.target_name }}.tar.gz gruntcode
           shasum -a 256 ${{ matrix.target_name }}.tar.gz | tee ${{ matrix.target_name }}.tar.gz.sha256
 
-      - name: Upload to release
+      - name: Upload to release (tag only)
+        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
@@ -104,5 +114,11 @@ jobs:
             packages/opencode/${{ matrix.target_name }}.tar.gz
             packages/opencode/${{ matrix.target_name }}.tar.gz.sha256
           fail_on_unmatched_files: true
-          # Don't overwrite a release body if one was hand-written before pushing the tag
           generate_release_notes: true
+
+      - name: Upload artifact (branch only)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target_name }}-${{ steps.version.outputs.channel }}
+          path: packages/opencode/${{ matrix.target_name }}.tar.gz
